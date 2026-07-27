@@ -9,17 +9,22 @@ const endpoints = {
 };
 
 const ui = {
+  capacityIncidents: document.getElementById("capacityIncidents"),
   countStrip: document.getElementById("countStrip"),
+  credentialsIncidents: document.getElementById("credentialsIncidents"),
+  dataSourceIncidents: document.getElementById("dataSourceIncidents"),
   datasetCards: document.getElementById("datasetCards"),
   environmentBanner: document.getElementById("environmentBanner"),
   environmentDescription: document.getElementById("environmentDescription"),
   environmentMode: document.getElementById("environmentMode"),
   environmentTitle: document.getElementById("environmentTitle"),
+  failedDatasets: document.getElementById("failedDatasets"),
+  gatewayIncidents: document.getElementById("gatewayIncidents"),
   highlightsGrid: document.getElementById("highlightsGrid"),
   incidentTable: document.getElementById("incidentTable"),
   refreshTable: document.getElementById("refreshTable"),
   reloadButton: document.getElementById("reloadButton"),
-  setupPanel: document.getElementById("setupPanel"),
+  slowDatasets: document.getElementById("slowDatasets"),
   status: document.getElementById("statusMessage"),
   summaryGrid: document.getElementById("summaryGrid"),
   syncButton: document.getElementById("syncButton"),
@@ -151,12 +156,12 @@ function renderSummary(indicators) {
   const rates = indicators.rates ?? {};
   const durations = indicators.durations ?? {};
   const cards = [
+    ["Nombre total de refreshs", formatNumber(totals.refreshes), `${formatNumber(totals.incidents)} incident(s) detecte(s)`],
     ["Taux de succes", formatRate(rates.successRate), `${formatNumber(totals.successfulRefreshes)} refreshs termines`],
     ["Taux d'echec", formatRate(rates.failureRate), `${formatNumber(totals.failedRefreshes)} refreshs echoues`],
     ["Duree moyenne", formatDuration(durations.averageSeconds), `Pic a ${formatDuration(durations.maximumSeconds)}`],
     ["Refreshs en retard", formatNumber(totals.delayedRefreshes), `Seuil de ${formatDuration(indicators.thresholds?.delayedRefreshSeconds)}`],
-    ["Anomalies de duree", formatNumber(totals.durationAnomalies), `Facteur ${String(indicators.thresholds?.durationAnomalyFactor ?? "N/A").replace(".", ",")}x`],
-    ["Executions non terminees", formatNumber(totals.inProgressRefreshes), "Refreshs actifs, bloques ou planifies"],
+    ["Anomalies de duree", formatNumber(totals.durationAnomalies), `Executions non terminees: ${formatNumber(totals.inProgressRefreshes)}`],
   ];
 
   ui.summaryGrid.innerHTML = cards.map(([label, value, note]) => `
@@ -321,6 +326,91 @@ function renderDatasetCards(datasets, refreshes, incidents) {
   `).join("");
 }
 
+function renderList(container, items, renderItem) {
+  if (!items?.length) {
+    container.innerHTML = `<div class="empty-state">Aucune donnee disponible pour le moment.</div>`;
+    return;
+  }
+  container.innerHTML = items.map(renderItem).join("");
+}
+
+function renderSlowDatasets(indicators) {
+  renderList(
+    ui.slowDatasets,
+    indicators?.datasets?.slowest ?? [],
+    (item) => `
+      <article class="list-item">
+        <strong>${escapeHtml(item.datasetName ?? item.datasetId)}</strong>
+        <p class="list-note">Moyenne ${formatDuration(item.averageDurationSeconds)} | Maximum ${formatDuration(item.maxDurationSeconds)}</p>
+        <div class="stat-row">
+          <span class="stat-pill">${escapeHtml(formatNumber(item.refreshCount))} refresh(s)</span>
+        </div>
+      </article>
+    `,
+  );
+}
+
+function renderFailedDatasets(indicators) {
+  renderList(
+    ui.failedDatasets,
+    indicators?.datasets?.mostFailures ?? [],
+    (item) => `
+      <article class="list-item">
+        <strong>${escapeHtml(item.datasetName ?? item.datasetId)}</strong>
+        <p class="list-note">${escapeHtml(formatNumber(item.failureCount))} refresh(s) echoue(s)</p>
+      </article>
+    `,
+  );
+}
+
+function renderIncidentBreakdowns(indicators) {
+  renderList(
+    ui.gatewayIncidents,
+    indicators?.incidents?.byGateway ?? [],
+    (item) => `
+      <article class="list-item">
+        <strong>${escapeHtml(item.gatewayId ?? "Gateway inconnue")}</strong>
+        <p class="list-note">${escapeHtml(formatNumber(item.count))} incident(s)</p>
+      </article>
+    `,
+  );
+
+  renderList(
+    ui.capacityIncidents,
+    indicators?.incidents?.byCapacity ?? [],
+    (item) => `
+      <article class="list-item">
+        <strong>${escapeHtml(item.capacityId ?? "Capacite partagee")}</strong>
+        <p class="list-note">${escapeHtml(formatNumber(item.count))} incident(s)</p>
+      </article>
+    `,
+  );
+
+  const credentialsRelated = indicators?.incidents?.credentialsRelated ?? 0;
+  const totalIncidents = indicators?.totals?.incidents ?? 0;
+  ui.credentialsIncidents.innerHTML = `
+    <div class="metric-chip">
+      <span>Incidents credentials</span>
+      <strong>${escapeHtml(formatNumber(credentialsRelated))}</strong>
+    </div>
+    <div class="metric-chip">
+      <span>Part dans les incidents</span>
+      <strong>${escapeHtml(totalIncidents ? formatRate(credentialsRelated / totalIncidents) : "0,0%")}</strong>
+    </div>
+  `;
+
+  renderList(
+    ui.dataSourceIncidents,
+    indicators?.incidents?.byDataSource ?? [],
+    (item) => `
+      <article class="list-item">
+        <strong>${escapeHtml(item.datasourceType ?? "Source inconnue")}</strong>
+        <p class="list-note">${escapeHtml(formatNumber(item.count))} incident(s)</p>
+      </article>
+    `,
+  );
+}
+
 function renderRefreshTable(refreshes) {
   const rows = refreshes.map((item) => [
     item.datasetName ?? item.datasetId,
@@ -355,56 +445,6 @@ function renderIncidentTable(incidents) {
   );
 }
 
-function renderSetupPanel(modePayload, errors, hasAnyData) {
-  const demoInstructions = `
-    <article class="setup-card">
-      <h3>Pourquoi ce PoC est utile</h3>
-      <ul class="setup-list">
-        <li>Il charge un scenario complet sans credentials Power BI.</li>
-        <li>Il illustre des refreshs reussis, echoues, retardes et non termines.</li>
-        <li>Il fournit des incidents et recommandations credibles pour une soutenance.</li>
-      </ul>
-    </article>
-    <article class="setup-card">
-      <h3>Ce que vous pouvez montrer</h3>
-      <ul class="setup-list">
-        <li>La sante globale du portefeuille supervise.</li>
-        <li>Les datasets les plus lents ou les plus exposes.</li>
-        <li>Les causes probables: gateway, capacite, credentials et Power Query.</li>
-      </ul>
-    </article>
-  `;
-
-  const liveFallback = `
-    <article class="setup-card warning-card">
-      <h3>Le mode live n'a pas encore de donnees visibles</h3>
-      <ul class="setup-list">
-        <li>Ajoutez <code>POC_MODE=true</code> dans <code>.env</code> pour une demo immediate.</li>
-        <li>Ou configurez les variables Power BI et PostgreSQL puis utilisez la synchronisation.</li>
-        <li>Le dashboard affiche ce message pour eviter un ecran vide.</li>
-      </ul>
-    </article>
-  `;
-
-  const partialWarning = errors.length
-    ? `
-      <article class="setup-card warning-card">
-        <h3>Chargement partiel detecte</h3>
-        <ul class="setup-list">
-          ${errors.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-        </ul>
-      </article>
-    `
-    : "";
-
-  if (appMode === "demo") {
-    ui.setupPanel.innerHTML = demoInstructions + partialWarning;
-    return;
-  }
-
-  ui.setupPanel.innerHTML = (hasAnyData ? demoInstructions : liveFallback) + partialWarning;
-}
-
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -423,6 +463,22 @@ function resultError(label, result) {
     return null;
   }
   return `${label}: ${result.reason?.message ?? "erreur inconnue"}`;
+}
+
+function renderEmptyDashboard(message) {
+  ui.countStrip.innerHTML = "";
+  ui.summaryGrid.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+  ui.highlightsGrid.innerHTML = `<div class="empty-state">Aucun point cle ne peut etre calcule.</div>`;
+  ui.workspaceCards.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.datasetCards.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.slowDatasets.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.failedDatasets.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.gatewayIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.capacityIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.credentialsIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.dataSourceIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
+  ui.refreshTable.innerHTML = `<div class="empty-state">Aucun refresh a afficher.</div>`;
+  ui.incidentTable.innerHTML = `<div class="empty-state">Aucun incident a afficher.</div>`;
 }
 
 async function loadDashboard() {
@@ -458,9 +514,11 @@ async function loadDashboard() {
     renderHighlights(indicators, refreshes, incidents);
     renderWorkspaceCards(workspaces, datasets, refreshes, incidents);
     renderDatasetCards(datasets, refreshes, incidents);
+    renderSlowDatasets(indicators);
+    renderFailedDatasets(indicators);
+    renderIncidentBreakdowns(indicators);
     renderRefreshTable(refreshes);
     renderIncidentTable(incidents);
-    renderSetupPanel(modePayload, errors, Boolean(workspaces.length || datasets.length || refreshes.length || incidents.length));
 
     if (errors.length) {
       setStatus(`Chargement partiel: ${errors.length} source(s) indisponible(s).`, true);
@@ -476,14 +534,7 @@ async function loadDashboard() {
       title: "Dashboard indisponible",
       description: "Impossible de charger le mode d'execution du service.",
     });
-    ui.countStrip.innerHTML = "";
-    ui.summaryGrid.innerHTML = `<div class="empty-state">Le service n'a pas repondu correctement.</div>`;
-    ui.highlightsGrid.innerHTML = `<div class="empty-state">Aucun point cle ne peut etre calcule.</div>`;
-    ui.workspaceCards.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-    ui.datasetCards.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-    ui.refreshTable.innerHTML = `<div class="empty-state">Aucun refresh a afficher.</div>`;
-    ui.incidentTable.innerHTML = `<div class="empty-state">Aucun incident a afficher.</div>`;
-    renderSetupPanel(null, [`Mode: ${error.message}`], false);
+    renderEmptyDashboard("Le service n'a pas repondu correctement.");
     setStatus(`Echec du chargement du dashboard: ${error.message}`, true);
   }
 }
@@ -492,7 +543,7 @@ async function syncMonitoring() {
   ui.syncButton.disabled = true;
   try {
     setStatus(appMode === "demo"
-      ? "Regeneration du snapshot PoC..."
+      ? "Regeneration du snapshot ..."
       : "Synchronisation du monitoring en cours...");
     const result = await fetchJson(endpoints.sync, { method: "POST" });
     setStatus(

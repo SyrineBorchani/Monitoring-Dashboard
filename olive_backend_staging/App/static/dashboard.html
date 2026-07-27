@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dashboard PoC Power BI</title>
+  <title>Monitoring Dashboard</title>
   <link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
@@ -11,19 +11,18 @@
     <header class="hero">
       <div class="hero-copy">
         <p class="eyebrow">Monitoring Power BI / Fabric</p>
+        <h1>Supervision des workspaces, datasets, refreshs et incidents.</h1>
+        
 
-          <span id="environmentMode" class="environment-pill">DEMO</span>
-        </section>
+       
 
         <div id="countStrip" class="count-strip"></div>
+        <p id="statusMessage" class="status-message">Pret.</p>
       </div>
 
       <aside class="hero-actions">
         <button id="syncButton" class="action-button primary">Regenerer le snapshot</button>
         <button id="reloadButton" class="action-button secondary">Recharger la vue</button>
-        <div class="callout-card">
-
-        </div>
       </aside>
     </header>
 
@@ -68,6 +67,53 @@
         <div id="datasetCards" class="card-stack"></div>
       </article>
 
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Performance</p>
+            <h2>Datasets les plus lents</h2>
+          </div>
+        </div>
+        <div id="slowDatasets" class="list-stack"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Fiabilite</p>
+            <h2>Datasets avec le plus d'echecs</h2>
+          </div>
+        </div>
+        <div id="failedDatasets" class="list-stack"></div>
+      </article>
+
+      <article class="panel full-width">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Incidents</p>
+            <h2>Repartition des incidents</h2>
+          </div>
+        </div>
+        <div class="breakdown-grid">
+          <div class="breakdown-card">
+            <h3>Incidents lies a la gateway</h3>
+            <div id="gatewayIncidents" class="list-stack compact"></div>
+          </div>
+          <div class="breakdown-card">
+            <h3>Incidents lies a la capacite</h3>
+            <div id="capacityIncidents" class="list-stack compact"></div>
+          </div>
+          <div class="breakdown-card">
+            <h3>Incidents lies aux credentials</h3>
+            <div id="credentialsIncidents" class="metric-strip"></div>
+          </div>
+          <div class="breakdown-card">
+            <h3>Incidents lies aux sources de donnees</h3>
+            <div id="dataSourceIncidents" class="list-stack compact"></div>
+          </div>
+        </div>
+      </article>
+
       <article class="panel full-width">
         <div class="panel-header">
           <div>
@@ -87,7 +133,6 @@
         </div>
         <div id="incidentTable" class="table-shell"></div>
       </article>
-
     </section>
   </main>
 
