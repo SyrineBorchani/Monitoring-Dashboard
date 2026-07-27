@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard PoC Power BI</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Monitoring Power BI / Fabric</p>
+
+          <span id="environmentMode" class="environment-pill">DEMO</span>
+        </section>
+
+        <div id="countStrip" class="count-strip"></div>
+      </div>
+
+      <aside class="hero-actions">
+        <button id="syncButton" class="action-button primary">Regenerer le snapshot</button>
+        <button id="reloadButton" class="action-button secondary">Recharger la vue</button>
+        <div class="callout-card">
+
+        </div>
+      </aside>
+    </header>
+
+    <section class="content-grid">
+      <article class="panel full-width">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Synthese</p>
+            <h2>Indicateurs cles</h2>
+          </div>
+        </div>
+        <div id="summaryGrid" class="summary-grid"></div>
+      </article>
+
+      <article class="panel full-width">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Lecture rapide</p>
+            
+          </div>
+        </div>
+        <div id="highlightsGrid" class="highlight-grid"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Couverture</p>
+            <h2>Workspaces suivis</h2>
+          </div>
+        </div>
+        <div id="workspaceCards" class="card-stack"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Exposition</p>
+            <h2>Datasets a surveiller</h2>
+          </div>
+        </div>
+        <div id="datasetCards" class="card-stack"></div>
+      </article>
+
+      <article class="panel full-width">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Historique</p>
+            <h2>Refreshs recents</h2>
+          </div>
+        </div>
+        <div id="refreshTable" class="table-shell"></div>
+      </article>
+
+      <article class="panel full-width">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">Incidents</p>
+            <h2>Evenements a commenter</h2>
+          </div>
+        </div>
+        <div id="incidentTable" class="table-shell"></div>
+      </article>
+
+    </section>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>
