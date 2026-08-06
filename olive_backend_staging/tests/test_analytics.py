@@ -12,13 +12,20 @@ from App.analytics import (
     _extract_error_details,
     build_dataset_record,
     build_datasource_record,
+    build_report_record,
     build_refresh_record,
     build_workspace_record,
     derive_incidents,
     parse_datetime,
     summarize_monitoring,
 )
-from tests.support import DATASOURCE_RAW, DATASET_RAW, REFRESH_HISTORY_RAW, WORKSPACE_RAW
+from tests.support import (
+    DATASOURCE_RAW,
+    DATASET_RAW,
+    REFRESH_HISTORY_RAW,
+    WORKSPACE_RAW,
+    build_seed_snapshot,
+)
 
 
 def _build_context():
@@ -101,6 +108,26 @@ def test_build_dataset_record_collects_gateway_and_datasource_metadata() -> None
         r"C:\Data\report.xlsx",
         "sql01 | warehouse",
     ]
+
+
+def test_build_report_record_normalizes_workspace_and_view_count() -> None:
+    workspace = build_workspace_record(deepcopy(WORKSPACE_RAW))
+
+    report = build_report_record(
+        {
+            "id": "report-1",
+            "name": "Operations Overview",
+            "datasetId": "dataset-1",
+            "usageMetrics": {"views": "42"},
+        },
+        workspace,
+    )
+
+    assert report["reportId"] == "report-1"
+    assert report["reportName"] == "Operations Overview"
+    assert report["workspaceId"] == "workspace-1"
+    assert report["workspaceName"] == "Syrine"
+    assert report["viewCount"] == 42
 
 
 def test_build_refresh_record_uses_refresh_attempt_errors_and_computes_duration() -> None:
@@ -241,3 +268,42 @@ def test_summarize_monitoring_aggregates_counts_and_breakdowns() -> None:
     assert summary["incidents"]["byDataSource"] == [
         {"datasourceType": "File", "count": 3}
     ]
+
+
+def test_summarize_monitoring_includes_refresh_trends() -> None:
+    workspace, dataset = _build_context()
+    refreshes = [
+        build_refresh_record(deepcopy(item), workspace, dataset)
+        for item in REFRESH_HISTORY_RAW
+    ]
+    incidents = derive_incidents(refreshes)
+
+    summary = summarize_monitoring(refreshes, incidents, [dataset])
+
+    assert summary["trends"]["refreshTimeline"][0]["datasetName"] == "report"
+    assert summary["trends"]["dailyRefreshPerformance"][0]["date"] == "2026-08-04"
+
+
+def test_summarize_monitoring_includes_fabric_inventory_and_procedures() -> None:
+    snapshot = build_seed_snapshot()
+
+    summary = summarize_monitoring(
+        snapshot["refreshes"],
+        snapshot["incidents"],
+        snapshot["datasets"],
+        snapshot["fabricItems"],
+        snapshot["fabricExecutions"],
+        snapshot["fabricSqlExecutions"],
+    )
+
+    assert summary["fabric"]["inventory"] == {
+        "totalItems": 2,
+        "warehouseCount": 1,
+        "lakehouseCount": 1,
+        "sqlEnabledItems": 2,
+    }
+    assert summary["fabric"]["executions"]["failed"] == 1
+    assert summary["fabric"]["procedures"]["storedProcedureExecutionCount"] == 1
+    assert summary["fabric"]["procedures"]["slowestStoredProcedures"][0]["procedureName"] == (
+        "dbo.RefreshFinanceSnapshot"
+    )

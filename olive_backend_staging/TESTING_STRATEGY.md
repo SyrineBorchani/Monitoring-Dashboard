@@ -22,6 +22,27 @@ The two highest-risk areas are:
 - analytics and incident derivation logic
 - PostgreSQL-specific persistence behavior
 
+## Dependency Boundary Matrix
+
+This matrix focuses on external dependencies and the way the application integrates with them. It does not test third-party libraries internally.
+
+| Dependency | Used in | Critical integration points | Automated approach | Real environment testing still needed |
+| --- | --- | --- | --- | --- |
+| Microsoft Entra token endpoint via `requests` | `App/auth.py` | token URL construction, client credentials form payload, timeout, token caching, force refresh, malformed token responses | mocked boundary tests in `tests/test_auth.py` | validate real tenant credentials, permission scopes, secret rotation, and tenant policy behavior |
+| Power BI REST API via `requests` | `App/powerbi_client.py`, `App/routes/powerbi.py` | bearer auth header, request path formatting, query params, 401 retry, 429 propagation, timeout propagation, malformed JSON, unexpected payload shapes | mocked adapter tests in `tests/test_powerbi_client.py` and route contract tests in `tests/test_api_contract.py`/`tests/test_smoke.py` | validate real API schema drift, throttling headers, pagination behavior, tenant-specific authorization, and live workspace/dataset access |
+| PostgreSQL via `pg8000` | `App/database.py`, `App/storage.py` | engine creation, schema bootstrap, session creation, upserts, constraints, query filtering, rollback after failed writes | real database integration tests in `tests/test_database_runtime.py` and `tests/test_storage_integration.py` | validate production connectivity, TLS/network settings, credentials, database privileges, and larger-volume performance |
+| SQLAlchemy ORM/Core | `App/database.py`, `App/models.py`, `App/storage.py` | repository/ORM mapping, PostgreSQL JSONB writes, conflict handling, transaction semantics | exercised only through app-owned persistence tests against PostgreSQL | no separate library-internal tests; real production schema evolution would need migration tests if Alembic is introduced |
+| FastAPI / Starlette framework | `App/main.py`, `App/routes/*.py` | lifespan startup, route wiring, query validation, error mapping, redirects, static mount behavior | in-process app integration tests in `tests/test_framework_integration.py`, `tests/test_smoke.py`, and `tests/test_api_contract.py` | validate process-level deployment behavior under Uvicorn/reverse proxy and any production middleware once added |
+| `python-dotenv` and environment configuration | `App/config.py` | `.env` loading, required env vars, DB URL normalization, fallback DB URL assembly | configuration boundary tests in `tests/test_config.py` | validate real deployment env injection and secret management outside local `.env` files |
+| Filesystem-backed dashboard assets | `App/routes/ui.py`, `App/static/*` | dashboard file existence, readability, file serving contract | route-level filesystem tests in `tests/test_framework_integration.py` and UI smoke coverage in `tests/test_smoke.py` | validate packaging/deployment paths and web-server caching/static asset hosting in production |
+| Uvicorn runtime | local startup only | ASGI server startup and serving process | not directly automated; app behavior is covered in-process through FastAPI `TestClient` | run manual smoke in the deployed runtime because the repo does not contain process-level server tests |
+
+## Not Applicable
+
+- AI/ML dependencies: none are present in the repository as of August 4, 2026.
+- Database migrations: no Alembic or other migration framework is present, so migration tests are not applicable yet.
+- Middleware-specific tests: no custom middleware is currently implemented.
+
 ## Recommended Testing Pyramid
 
 ### Distribution
@@ -100,14 +121,16 @@ Recommended but not yet implemented:
 
 - analytics normalization and aggregation
 - configuration assembly and validation
-- auth token caching and error propagation
-- Power BI client request/retry behavior
+- auth token caching, request formatting, and malformed response handling
+- Power BI client request/retry behavior, malformed payload handling, and unexpected payload shapes
 
 ### Integration coverage implemented
 
 - real PostgreSQL persistence with isolated temporary databases
+- database schema bootstrap and session creation against a temporary PostgreSQL database
 - API smoke tests
 - API validation and error mapping
+- framework lifespan and dashboard filesystem error handling
 
 ### End-to-end coverage implemented
 
@@ -152,7 +175,7 @@ Implemented suites:
 
 Current result at generation time:
 
-- `55 passed`
+- `69 passed` on August 4, 2026
 
 ## Remaining Gaps
 
@@ -160,14 +183,12 @@ Still recommended:
 
 - browser E2E tests for the dashboard UI
 - query and rendering tests around partial API failure in a real browser
-- startup tests that exercise `App.main` with real env variations
-- resilience tests for malformed upstream Power BI payloads
-- transaction failure / rollback behavior in `App/storage.py`
+- process-level startup tests that exercise Uvicorn or the deployed host
 - performance tests for large refresh and incident histories
+- live-tenant verification of Power BI throttling, auth scopes, and workspace permissions
 
 ## Operational Notes
 
 - The integration suite creates and destroys isolated temporary PostgreSQL databases.
 - These tests assume the configured PostgreSQL user can create databases.
 - The default suite intentionally avoids live Microsoft network calls.
-

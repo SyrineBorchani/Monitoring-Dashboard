@@ -1,9 +1,5 @@
 # PROJECT_DOCUMENTATION
 
-Generated from the current codebase state on 2026-08-04.
-
-This document is intended to give another AI enough technical context to design a complete test strategy without rereading the source code. All statements below are based on the repository contents that exist now. Anything not directly supported by the code is labeled `Unknown` or `Inferred`.
-
 ## 1. Project Overview
 
 ### Purpose
@@ -70,15 +66,6 @@ Inferred from code and tests:
 - The application stores large portions of raw external payloads alongside normalized fields.
 - The frontend is plain static JavaScript with direct DOM manipulation; there is no frontend build system.
 
-## 2. Repository Structure
-
-Project root in the workspace:
-
-- `C:\Users\GMI\OneDrive\Documents\Monitoring Dashboard`
-
-Application root:
-
-- `C:\Users\GMI\OneDrive\Documents\Monitoring Dashboard\olive_backend_staging`
 
 ### Top-level workspace structure
 
@@ -130,7 +117,7 @@ Application root:
 | --- | --- |
 | `tests/test_smoke.py` | Uses FastAPI `TestClient` and test doubles to cover UI routes, stored/live API smoke tests, sync flow, empty storage behavior, invalid IDs, and upstream error mapping. |
 
-## 3. Tech Stack
+## 2. Tech Stack
 
 ### Languages
 
@@ -186,7 +173,7 @@ From `requirements-dev.txt`:
 | Reverse proxy config | Unknown. |
 | Process manager config | Unknown. |
 
-## 4. Architecture
+## 3. Architecture
 
 ### High-Level Style
 

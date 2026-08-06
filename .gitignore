@@ -1,5 +1,5 @@
-olive_backend_staging/.venv/
-olive_backend_staging/.env
-olive_backend_staging/*.log
-olive_backend_staging/**/*.pyc
-olive_backend_staging/**/__pycache__/
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc

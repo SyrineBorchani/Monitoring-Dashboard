@@ -1,13 +1,17 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Workspace(Base):
@@ -18,7 +22,7 @@ class Workspace(Base):
     is_read_only: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     is_on_dedicated_capacity: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
-    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Report(Base):
@@ -31,7 +35,7 @@ class Report(Base):
     web_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     embed_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
-    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Dataset(Base):
@@ -43,7 +47,19 @@ class Dataset(Base):
     configured_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     is_refreshable: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
-    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DatasetMeasurement(Base):
+    __tablename__ = "dataset_measurements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[str] = mapped_column(String, index=True)
+    dataset_id: Mapped[str] = mapped_column(String, index=True)
+    dataset_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    measured_at: Mapped[datetime] = mapped_column(DateTime, index=True, default=utcnow)
+    raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
 
 
 class RefreshHistory(Base):
@@ -66,7 +82,7 @@ class RefreshHistory(Base):
     start_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
-    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Incident(Base):
@@ -82,4 +98,65 @@ class Incident(Base):
     recommendation: Mapped[str] = mapped_column(String, nullable=False)
     detected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
-    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class FabricItem(Base):
+    __tablename__ = "fabric_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    item_type: Mapped[str] = mapped_column(String, index=True)
+    sql_endpoint_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class FabricExecution(Base):
+    __tablename__ = "fabric_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id",
+            "execution_id",
+            name="uq_fabric_executions_item_execution",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(String, index=True)
+    workspace_id: Mapped[str] = mapped_column(String, index=True)
+    item_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    execution_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    job_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    invoke_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    start_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class FabricSQLExecution(Base):
+    __tablename__ = "fabric_sql_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id",
+            "query_id",
+            name="uq_fabric_sql_executions_item_query",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(String, index=True)
+    workspace_id: Mapped[str] = mapped_column(String, index=True)
+    item_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    query_id: Mapped[str] = mapped_column(String, nullable=False)
+    statement_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    procedure_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_stored_procedure: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    start_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    raw_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

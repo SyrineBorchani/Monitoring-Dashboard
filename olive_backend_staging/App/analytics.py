@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import json
+import re
 from statistics import mean
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -118,6 +119,72 @@ def build_dataset_record(
     }
 
 
+def _extract_non_negative_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return None
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = float(text.replace(",", "."))
+    except ValueError:
+        return None
+    if parsed < 0:
+        return None
+    return int(parsed)
+
+
+def _extract_report_view_count(raw_report: Dict[str, Any]) -> int:
+    candidate_paths = [
+        ("viewCount",),
+        ("views",),
+        ("viewsCount",),
+        ("reportViewCount",),
+        ("usageCount",),
+        ("nombreVues",),
+        ("nombreDeVues",),
+        ("nbVues",),
+        ("usageMetrics", "viewCount"),
+        ("usageMetrics", "views"),
+        ("metrics", "viewCount"),
+        ("metrics", "views"),
+        ("stats", "viewCount"),
+        ("stats", "views"),
+    ]
+
+    for path in candidate_paths:
+        current: Any = raw_report
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        parsed = _extract_non_negative_int(current)
+        if parsed is not None:
+            return parsed
+
+    return 0
+
+
+def build_report_record(
+    raw_report: Dict[str, Any],
+    workspace: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        **raw_report,
+        "reportId": raw_report.get("id"),
+        "reportName": raw_report.get("name"),
+        "workspaceId": workspace.get("workspaceId"),
+        "workspaceName": workspace.get("workspaceName"),
+        "datasetId": raw_report.get("datasetId"),
+        "viewCount": _extract_report_view_count(raw_report),
+    }
+
+
 def build_refresh_record(
     raw_refresh: Dict[str, Any],
     workspace: Dict[str, Any],
@@ -168,6 +235,157 @@ def build_refresh_record(
         "errorMessage": error_message,
         "refreshAttemptCount": len(raw_refresh.get("refreshAttempts", [])),
         "isDelayed": is_delayed,
+    }
+
+
+def build_fabric_item_record(
+    raw_item: Dict[str, Any],
+    workspace: Dict[str, Any],
+    item_type: str,
+) -> Dict[str, Any]:
+    properties = raw_item.get("properties") or {}
+    sql_properties = properties.get("sqlEndpointProperties") or {}
+    display_name = raw_item.get("displayName") or raw_item.get("name")
+
+    return {
+        **raw_item,
+        "itemId": raw_item.get("id"),
+        "itemName": display_name,
+        "itemType": raw_item.get("type") or item_type,
+        "workspaceId": workspace.get("workspaceId"),
+        "workspaceName": workspace.get("workspaceName"),
+        "description": raw_item.get("description"),
+        "connectionString": properties.get("connectionString")
+        or sql_properties.get("connectionString"),
+        "sqlEndpointId": sql_properties.get("id"),
+        "sqlProvisioningStatus": sql_properties.get("provisioningStatus"),
+        "createdAt": properties.get("createdDate"),
+        "updatedAt": properties.get("lastUpdatedTime"),
+        "oneLakeTablesPath": properties.get("oneLakeTablesPath"),
+        "oneLakeFilesPath": properties.get("oneLakeFilesPath"),
+        "collationType": properties.get("collationType"),
+        "isSqlEnabled": bool(
+            properties.get("connectionString")
+            or sql_properties.get("connectionString")
+        ),
+    }
+
+
+def _extract_failure_reason(raw_failure: Any) -> Optional[str]:
+    if raw_failure is None:
+        return None
+    if isinstance(raw_failure, str):
+        return raw_failure.strip() or None
+    if not isinstance(raw_failure, dict):
+        return str(raw_failure)
+    for key in ("message", "errorCode", "error", "code"):
+        value = raw_failure.get(key)
+        if value:
+            return str(value)
+    return json.dumps(raw_failure, ensure_ascii=False)
+
+
+def build_fabric_execution_record(
+    raw_execution: Dict[str, Any],
+    fabric_item: Dict[str, Any],
+) -> Dict[str, Any]:
+    start_time = parse_datetime(raw_execution.get("startTimeUtc"))
+    end_time = parse_datetime(raw_execution.get("endTimeUtc"))
+
+    duration_seconds: Optional[float] = None
+    if start_time and end_time:
+        duration_seconds = max((end_time - start_time).total_seconds(), 0.0)
+    elif start_time and raw_execution.get("status") not in {"Completed", "Failed", "Cancelled"}:
+        duration_seconds = max((_now_utc() - start_time).total_seconds(), 0.0)
+
+    execution_id = raw_execution.get("id") or (
+        f"{fabric_item.get('itemId')}:{raw_execution.get('startTimeUtc')}"
+    )
+
+    return {
+        **raw_execution,
+        "executionId": execution_id,
+        "workspaceId": fabric_item.get("workspaceId"),
+        "workspaceName": fabric_item.get("workspaceName"),
+        "itemId": fabric_item.get("itemId"),
+        "itemName": fabric_item.get("itemName"),
+        "itemType": fabric_item.get("itemType"),
+        "durationSeconds": _round(duration_seconds),
+        "durationMinutes": _round(
+            None if duration_seconds is None else duration_seconds / 60.0
+        ),
+        "failureReasonText": _extract_failure_reason(raw_execution.get("failureReason")),
+    }
+
+
+def _normalize_identifier(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _extract_procedure_name(command: str) -> Optional[str]:
+    if not command:
+        return None
+    match = re.search(
+        r"\bexec(?:ute)?\s+(?:@?\w+\s*=\s*)?(?:\[?([\w]+)\]?\.)?\[?([\w]+)\]?",
+        command,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    schema_name = match.group(1)
+    procedure_name = match.group(2)
+    if schema_name:
+        return f"{schema_name}.{procedure_name}"
+    return procedure_name
+
+
+def build_fabric_sql_execution_record(
+    raw_query: Dict[str, Any],
+    fabric_item: Dict[str, Any],
+) -> Dict[str, Any]:
+    duration_seconds = _round(
+        None
+        if raw_query.get("total_elapsed_time_ms") is None
+        else float(raw_query.get("total_elapsed_time_ms")) / 1000.0
+    )
+    command = str(raw_query.get("command") or "")
+    statement_type = str(raw_query.get("statement_type") or "")
+    procedure_name = _extract_procedure_name(command)
+    is_stored_procedure = bool(
+        procedure_name
+        or statement_type.strip().lower() in {"exec", "execute"}
+    )
+
+    return {
+        **raw_query,
+        "queryId": _normalize_identifier(
+            raw_query.get("distributed_statement_id"),
+            f"{fabric_item.get('itemId')}:{raw_query.get('start_time')}",
+        ),
+        "workspaceId": fabric_item.get("workspaceId"),
+        "workspaceName": fabric_item.get("workspaceName"),
+        "itemId": fabric_item.get("itemId"),
+        "itemName": fabric_item.get("itemName"),
+        "itemType": fabric_item.get("itemType"),
+        "startTime": raw_query.get("start_time"),
+        "endTime": raw_query.get("end_time"),
+        "startTimeUtc": raw_query.get("start_time"),
+        "endTimeUtc": raw_query.get("end_time"),
+        "durationSeconds": duration_seconds,
+        "durationMinutes": _round(
+            None if duration_seconds is None else duration_seconds / 60.0
+        ),
+        "statementType": statement_type or None,
+        "status": raw_query.get("status"),
+        "command": command or None,
+        "loginName": raw_query.get("login_name"),
+        "errorCode": raw_query.get("error_code"),
+        "procedureName": procedure_name,
+        "isStoredProcedure": is_stored_procedure,
+        "submittedAt": raw_query.get("submit_time"),
+        "databaseName": raw_query.get("database_name"),
+        "totalElapsedMs": raw_query.get("total_elapsed_time_ms"),
     }
 
 
@@ -403,10 +621,222 @@ def derive_incidents(refreshes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return incidents
 
 
+def _group_refreshes_by_day(refreshes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    daily_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for refresh in refreshes:
+        start_time = parse_datetime(refresh.get("startTime"))
+        if start_time is None:
+            continue
+        daily_groups[start_time.date().isoformat()].append(refresh)
+
+    daily_performance = []
+    for day_key in sorted(daily_groups):
+        items = daily_groups[day_key]
+        durations = [
+            float(item["durationSeconds"])
+            for item in items
+            if item.get("durationSeconds") is not None
+        ]
+        daily_performance.append(
+            {
+                "date": day_key,
+                "totalRefreshes": len(items),
+                "failedRefreshes": sum(1 for item in items if item.get("status") == "Failed"),
+                "delayedRefreshes": sum(1 for item in items if item.get("isDelayed")),
+                "averageDurationSeconds": _round(mean(durations) if durations else 0.0),
+                "maximumDurationSeconds": _round(max(durations) if durations else 0.0),
+            }
+        )
+
+    return daily_performance
+
+
+def _build_refresh_timeline(
+    refreshes: List[Dict[str, Any]],
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    timeline = [
+        {
+            "timestamp": item.get("startTime"),
+            "datasetId": item.get("datasetId"),
+            "datasetName": item.get("datasetName"),
+            "status": item.get("status"),
+            "isDelayed": bool(item.get("isDelayed")),
+            "durationSeconds": item.get("durationSeconds"),
+        }
+        for item in refreshes
+        if item.get("startTime") and item.get("durationSeconds") is not None
+    ]
+    timeline.sort(key=lambda item: item["timestamp"] or "")
+    if limit is None:
+        return timeline
+    return timeline[-limit:]
+
+
+def _build_fabric_execution_timeline(
+    executions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    timeline = [
+        {
+            "timestamp": item.get("startTimeUtc") or item.get("startTime"),
+            "itemId": item.get("itemId"),
+            "itemName": item.get("itemName"),
+            "itemType": item.get("itemType"),
+            "status": item.get("status"),
+            "durationSeconds": item.get("durationSeconds"),
+        }
+        for item in executions
+        if (item.get("startTimeUtc") or item.get("startTime"))
+        and item.get("durationSeconds") is not None
+    ]
+    timeline.sort(key=lambda item: item["timestamp"] or "")
+    return timeline
+
+
+def _summarize_fabric_monitoring(
+    fabric_items: List[Dict[str, Any]],
+    fabric_executions: List[Dict[str, Any]],
+    fabric_sql_executions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    item_type_counter = Counter(item.get("itemType") for item in fabric_items if item.get("itemType"))
+    execution_durations = [
+        float(item["durationSeconds"])
+        for item in fabric_executions
+        if item.get("durationSeconds") is not None
+    ]
+    execution_durations_by_item: Dict[Tuple[str, str, str], List[float]] = defaultdict(list)
+    execution_failures_by_item: Counter = Counter()
+
+    for execution in fabric_executions:
+        key = (
+            execution.get("itemId"),
+            execution.get("itemName") or execution.get("itemId"),
+            execution.get("itemType") or "FabricItem",
+        )
+        duration = execution.get("durationSeconds")
+        if duration is not None:
+            execution_durations_by_item[key].append(float(duration))
+        if str(execution.get("status") or "").lower() == "failed":
+            execution_failures_by_item[key] += 1
+
+    slowest_items = [
+        {
+            "itemId": item_id,
+            "itemName": item_name,
+            "itemType": item_type,
+            "averageDurationSeconds": _round(mean(durations)),
+            "maximumDurationSeconds": _round(max(durations)),
+            "executionCount": len(durations),
+        }
+        for (item_id, item_name, item_type), durations in execution_durations_by_item.items()
+        if durations
+    ]
+    slowest_items.sort(
+        key=lambda item: item.get("averageDurationSeconds") or 0.0,
+        reverse=True,
+    )
+
+    items_with_failures = [
+        {
+            "itemId": item_id,
+            "itemName": item_name,
+            "itemType": item_type,
+            "failureCount": failure_count,
+        }
+        for (item_id, item_name, item_type), failure_count in execution_failures_by_item.items()
+    ]
+    items_with_failures.sort(key=lambda item: item["failureCount"], reverse=True)
+
+    stored_procedure_executions = [
+        item for item in fabric_sql_executions if item.get("isStoredProcedure")
+    ]
+    procedure_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for execution in stored_procedure_executions:
+        procedure_name = execution.get("procedureName") or execution.get("command") or "Procedure"
+        procedure_groups[procedure_name].append(execution)
+
+    slowest_procedures = []
+    for procedure_name, procedure_items in procedure_groups.items():
+        durations = [
+            float(item["durationSeconds"])
+            for item in procedure_items
+            if item.get("durationSeconds") is not None
+        ]
+        if not durations:
+            continue
+        slowest_procedures.append(
+            {
+                "procedureName": procedure_name,
+                "averageDurationSeconds": _round(mean(durations)),
+                "maximumDurationSeconds": _round(max(durations)),
+                "executionCount": len(procedure_items),
+                "latestItemName": (
+                    sorted(
+                        procedure_items,
+                        key=lambda item: item.get("startTime") or "",
+                        reverse=True,
+                    )[0].get("itemName")
+                ),
+            }
+        )
+    slowest_procedures.sort(
+        key=lambda item: item.get("averageDurationSeconds") or 0.0,
+        reverse=True,
+    )
+
+    return {
+        "inventory": {
+            "totalItems": len(fabric_items),
+            "warehouseCount": item_type_counter.get("Warehouse", 0),
+            "lakehouseCount": item_type_counter.get("Lakehouse", 0),
+            "sqlEnabledItems": sum(1 for item in fabric_items if item.get("isSqlEnabled")),
+        },
+        "executions": {
+            "total": len(fabric_executions),
+            "completed": sum(
+                1
+                for item in fabric_executions
+                if str(item.get("status") or "").lower() == "completed"
+            ),
+            "failed": sum(
+                1
+                for item in fabric_executions
+                if str(item.get("status") or "").lower() == "failed"
+            ),
+            "inProgress": sum(
+                1
+                for item in fabric_executions
+                if str(item.get("status") or "").lower() not in {"completed", "failed", "cancelled"}
+            ),
+            "averageDurationSeconds": _round(
+                mean(execution_durations) if execution_durations else 0.0
+            ),
+            "maximumDurationSeconds": _round(
+                max(execution_durations) if execution_durations else 0.0
+            ),
+            "slowestItems": slowest_items[:5],
+            "mostFailures": items_with_failures[:5],
+        },
+        "procedures": {
+            "sqlExecutionCount": len(fabric_sql_executions),
+            "storedProcedureExecutionCount": len(stored_procedure_executions),
+            "slowestStoredProcedures": slowest_procedures[:5],
+        },
+    }
+
+
 def summarize_monitoring(
     refreshes: List[Dict[str, Any]],
     incidents: List[Dict[str, Any]],
+    datasets: Optional[List[Dict[str, Any]]] = None,
+    fabric_items: Optional[List[Dict[str, Any]]] = None,
+    fabric_executions: Optional[List[Dict[str, Any]]] = None,
+    fabric_sql_executions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    datasets = datasets or []
+    fabric_items = fabric_items or []
+    fabric_executions = fabric_executions or []
+    fabric_sql_executions = fabric_sql_executions or []
     total_refreshes = len(refreshes)
     successful_refreshes = [item for item in refreshes if item.get("status") == "Completed"]
     failed_refreshes = [item for item in refreshes if item.get("status") == "Failed"]
@@ -473,6 +903,12 @@ def summarize_monitoring(
         for datasource_type in incident.get("dataSourceTypes", []):
             datasource_counter[datasource_type] += 1
 
+    fabric_summary = _summarize_fabric_monitoring(
+        fabric_items,
+        fabric_executions,
+        fabric_sql_executions,
+    )
+
     return {
         "totals": {
             "refreshes": total_refreshes,
@@ -526,8 +962,16 @@ def summarize_monitoring(
                 for datasource_type, count in datasource_counter.most_common()
             ],
         },
+        "fabric": fabric_summary,
         "thresholds": {
             "delayedRefreshSeconds": DEFAULT_DELAY_THRESHOLD_SECONDS,
             "durationAnomalyFactor": DEFAULT_DURATION_ANOMALY_FACTOR,
+        },
+        "trends": {
+            "refreshTimeline": _build_refresh_timeline(refreshes),
+            "dailyRefreshPerformance": _group_refreshes_by_day(refreshes),
+            "fabricExecutionTimeline": _build_fabric_execution_timeline(
+                fabric_executions
+            ),
         },
     }

@@ -1,41 +1,51 @@
 const endpoints = {
-  mode: "/api/powerbi/mode",
   indicators: "/api/powerbi/monitoring/indicators?live=false",
+  datasets: "/api/powerbi/storage/datasets",
+  fabricExecutions: "/api/powerbi/storage/fabric/executions?limit=40",
+  fabricItems: "/api/powerbi/storage/fabric/items",
+  fabricSqlExecutions: "/api/powerbi/storage/fabric/sql-executions?limit=40",
+  incidents: "/api/powerbi/storage/incidents?limit=30",
+  reports: "/api/powerbi/reports",
+  refreshes: "/api/powerbi/storage/refreshes?limit=",
   sync: "/api/powerbi/monitoring/sync?refresh_top=10",
   workspaces: "/api/powerbi/storage/workspaces",
-  datasets: "/api/powerbi/storage/datasets",
-  refreshes: "/api/powerbi/storage/refreshes?limit=12",
-  incidents: "/api/powerbi/storage/incidents?limit=10",
+};
+
+const viewLabels = {
+  indicators: "Indicateurs",
+  performance: "Performance",
+  fabric: "Fabric",
+  incidents: "Incidents",
 };
 
 const ui = {
-  capacityIncidents: document.getElementById("capacityIncidents"),
-  countStrip: document.getElementById("countStrip"),
-  credentialsIncidents: document.getElementById("credentialsIncidents"),
-  dataSourceIncidents: document.getElementById("dataSourceIncidents"),
-  datasetCards: document.getElementById("datasetCards"),
-  environmentBanner: document.getElementById("environmentBanner"),
-  environmentDescription: document.getElementById("environmentDescription"),
-  environmentMode: document.getElementById("environmentMode"),
-  environmentTitle: document.getElementById("environmentTitle"),
-  failedDatasets: document.getElementById("failedDatasets"),
-  gatewayIncidents: document.getElementById("gatewayIncidents"),
+  heroMeta: document.getElementById("heroMeta"),
   highlightsGrid: document.getElementById("highlightsGrid"),
-  incidentTable: document.getElementById("incidentTable"),
-  refreshTable: document.getElementById("refreshTable"),
+  navLinks: Array.from(document.querySelectorAll("[data-view-target]")),
   reloadButton: document.getElementById("reloadButton"),
-  slowDatasets: document.getElementById("slowDatasets"),
   status: document.getElementById("statusMessage"),
   summaryGrid: document.getElementById("summaryGrid"),
   syncButton: document.getElementById("syncButton"),
+  viewPanels: Array.from(document.querySelectorAll("[data-view-panel]")),
   workspaceCards: document.getElementById("workspaceCards"),
 };
 
-let appMode = "live";
+let refreshLimit = 12;
+const refreshStep = 12;
+let isLoadingDashboard = false;
+
+function ensureBridge(name) {
+  const bridge = window[name] || {};
+  bridge.current = bridge.current ?? null;
+  window[name] = bridge;
+  return bridge;
+}
+
+const panelsBridge = ensureBridge("dashboardPanels");
 
 function setStatus(message, isError = false) {
   ui.status.textContent = message;
-  ui.status.style.color = isError ? "#b8483b" : "";
+  ui.status.classList.toggle("is-error", isError);
 }
 
 function escapeHtml(value) {
@@ -47,16 +57,24 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function normalizeFrenchText(value) {
+  return String(value ?? "");
+}
+
 function formatNumber(value) {
-  return new Intl.NumberFormat("fr-FR").format(value ?? 0);
+  return new Intl.NumberFormat("fr-FR").format(Number(value ?? 0));
 }
 
 function formatRate(value) {
-  return `${((value ?? 0) * 100).toFixed(1).replace(".", ",")}%`;
+  return `${(Number(value ?? 0) * 100).toFixed(1).replace(".", ",")}%`;
 }
 
-function formatDuration(seconds) {
-  if (seconds == null) {
+function formatDuration(value) {
+  if (value == null) {
+    return "N/A";
+  }
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) {
     return "N/A";
   }
   if (seconds >= 3600) {
@@ -82,367 +100,292 @@ function formatTimestamp(value) {
   });
 }
 
-function translateStatus(status) {
-  const normalized = String(status ?? "").toLowerCase();
+function formatShortDate(value) {
+  if (!value) {
+    return "N/A";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleDateString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
+function clampPercent(value) {
+  return Math.max(6, Math.min(100, Number(value ?? 0)));
+}
+
+function toPercent(value, maxValue) {
+  const safeMax = Math.max(Number(maxValue ?? 0), 1);
+  return (Number(value ?? 0) / safeMax) * 100;
+}
+
+function translateCause(cause) {
+  const normalized = String(cause ?? "").toLowerCase();
   const labels = {
-    completed: "Termine",
-    failed: "Echoue",
-    unknown: "Non termine",
-    cancelled: "Annule",
-    disabled: "Desactive",
+    credentials: "Identifiants",
+    gateway: "Gateway",
+    "source de donnees": "Source de donn\u00e9es",
+    capacite: "Capacit\u00e9",
+    "modele semantique": "Mod\u00e8le s\u00e9mantique",
+    planification: "Planification",
+    "power query": "Power Query",
   };
-  return labels[normalized] ?? status ?? "Inconnu";
+  return labels[normalized] ?? normalizeFrenchText(cause ?? "Cause inconnue");
 }
 
-function translateSeverity(severity) {
-  const normalized = String(severity ?? "").toLowerCase();
-  const labels = {
-    high: "Haute",
-    haute: "Haute",
-    medium: "Moyenne",
-    moyenne: "Moyenne",
-    low: "Faible",
-    faible: "Faible",
-  };
-  return labels[normalized] ?? severity ?? "Moyenne";
+function renderEmptyState(message) {
+  return `<div class="empty-state">${escapeHtml(normalizeFrenchText(message))}</div>`;
 }
 
-function translateIncidentType(incidentType) {
-  const labels = {
-    FailedRefresh: "Refresh echoue",
-    DelayedRefresh: "Refresh en retard",
-    DurationAnomaly: "Anomalie de duree",
-    RefreshNotExecuted: "Refresh non termine",
-    ConsecutiveFailures: "Echecs consecutifs",
-  };
-  return labels[incidentType] ?? incidentType ?? "Incident";
+function activateView(viewName) {
+  const nextView = viewLabels[viewName] ? viewName : "indicators";
+  ui.navLinks.forEach((link) => {
+    link.classList.toggle("is-active", link.dataset.viewTarget === nextView);
+  });
+  ui.viewPanels.forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.viewPanel === nextView);
+  });
 }
 
-function renderEnvironment(payload) {
-  appMode = payload?.mode ?? "live";
-  ui.environmentBanner.hidden = false;
-  ui.environmentTitle.textContent = payload?.title ?? "Environnement";
-  ui.environmentDescription.textContent = payload?.description ?? "";
-  ui.environmentMode.textContent = appMode === "demo" ? "DEMO" : "LIVE";
-  ui.syncButton.textContent = appMode === "demo"
-    ? "Regenerer le snapshot"
-    : "Synchroniser le monitoring";
-}
-
-function renderCountStrip(modePayload, indicators, workspaces, datasets, refreshes, incidents) {
-  const counts = modePayload?.counts ?? {};
-  const items = [
-    ["Workspaces", counts.workspaces ?? workspaces.length],
-    ["Datasets", counts.datasets ?? datasets.length],
-    ["Refreshs", counts.refreshes ?? indicators?.totals?.refreshes ?? refreshes.length],
-    ["Incidents", counts.incidents ?? indicators?.totals?.incidents ?? incidents.length],
-  ];
-
-  ui.countStrip.innerHTML = items.map(([label, value]) => `
-    <div class="count-chip">
-      <span>${escapeHtml(label)}</span>
-      <strong>${escapeHtml(formatNumber(value))}</strong>
-    </div>
-  `).join("");
+function activateViewFromHash() {
+  activateView(window.location.hash.replace("#", "") || "indicators");
 }
 
 function renderSummary(indicators) {
   if (!indicators) {
-    ui.summaryGrid.innerHTML = `<div class="empty-state">Les indicateurs ne sont pas disponibles.</div>`;
+    ui.summaryGrid.innerHTML = renderEmptyState("Les indicateurs ne sont pas disponibles.");
     return;
   }
 
   const totals = indicators.totals ?? {};
   const rates = indicators.rates ?? {};
   const durations = indicators.durations ?? {};
+  const maxDuration = Math.max(
+    durations.maximumSeconds ?? 0,
+    indicators.thresholds?.delayedRefreshSeconds ?? 0,
+    1,
+  );
+
   const cards = [
-    ["Nombre total de refreshs", formatNumber(totals.refreshes), `${formatNumber(totals.incidents)} incident(s) detecte(s)`],
-    ["Taux de succes", formatRate(rates.successRate), `${formatNumber(totals.successfulRefreshes)} refreshs termines`],
-    ["Taux d'echec", formatRate(rates.failureRate), `${formatNumber(totals.failedRefreshes)} refreshs echoues`],
-    ["Duree moyenne", formatDuration(durations.averageSeconds), `Pic a ${formatDuration(durations.maximumSeconds)}`],
-    ["Refreshs en retard", formatNumber(totals.delayedRefreshes), `Seuil de ${formatDuration(indicators.thresholds?.delayedRefreshSeconds)}`],
-    ["Anomalies de duree", formatNumber(totals.durationAnomalies), `Executions non terminees: ${formatNumber(totals.inProgressRefreshes)}`],
+    {
+      label: "Nombre total de refreshs",
+      value: formatNumber(totals.refreshes),
+      note: `${formatNumber(totals.incidents)} incident(s) d\u00e9tect\u00e9(s)`,
+      percent: 100,
+    },
+    {
+      label: "Taux de succ\u00e8s",
+      value: formatRate(rates.successRate),
+      note: `${formatNumber(totals.successfulRefreshes)} refreshs termin\u00e9s`,
+      percent: (rates.successRate ?? 0) * 100,
+    },
+    {
+      label: "Taux d'\u00e9chec",
+      value: formatRate(rates.failureRate),
+      note: `${formatNumber(totals.failedRefreshes)} refreshs \u00e9chou\u00e9s`,
+      percent: (rates.failureRate ?? 0) * 100,
+    },
+    {
+      label: "Dur\u00e9e moyenne des refreshs",
+      value: formatDuration(durations.averageSeconds),
+      note: "Moyenne calcul\u00e9e sur l'historique",
+      percent: toPercent(durations.averageSeconds, maxDuration),
+    },
+    {
+      label: "Dur\u00e9e maximale des refreshs",
+      value: formatDuration(durations.maximumSeconds),
+      note: "Pic de dur\u00e9e observ\u00e9",
+      percent: toPercent(durations.maximumSeconds, maxDuration),
+    },
+    {
+      label: "Refreshs en retard",
+      value: formatNumber(totals.delayedRefreshes),
+      note: `Seuil ${formatDuration(indicators.thresholds?.delayedRefreshSeconds)}`,
+      percent: totals.refreshes ? toPercent(totals.delayedRefreshes, totals.refreshes) : 0,
+    },
   ];
 
-  ui.summaryGrid.innerHTML = cards.map(([label, value, note]) => `
+  ui.summaryGrid.innerHTML = cards.map((card) => `
     <article class="metric-card">
-      <p class="metric-label">${escapeHtml(label)}</p>
-      <p class="metric-value">${escapeHtml(value)}</p>
-      <p class="metric-note">${escapeHtml(note)}</p>
+      <span class="metric-label">${escapeHtml(card.label)}</span>
+      <p class="metric-value">${escapeHtml(card.value)}</p>
+      <p class="metric-note">${escapeHtml(card.note)}</p>
+      <div class="metric-meter"><span style="width:${clampPercent(card.percent)}%"></span></div>
     </article>
   `).join("");
 }
 
-function topIncidentBySeverity(incidents) {
-  const rank = { Haute: 3, Moyenne: 2, Faible: 1 };
-  return [...incidents].sort((left, right) => {
-    const leftRank = rank[translateSeverity(left.severity)] ?? 0;
-    const rightRank = rank[translateSeverity(right.severity)] ?? 0;
-    if (leftRank !== rightRank) {
-      return rightRank - leftRank;
-    }
-    return String(right.detectedAt ?? "").localeCompare(String(left.detectedAt ?? ""));
-  })[0];
-}
+function renderHighlights(indicators) {
+  if (!indicators) {
+    ui.highlightsGrid.innerHTML = renderEmptyState("Les points essentiels ne sont pas disponibles.");
+    return;
+  }
 
-function renderHighlights(indicators, refreshes, incidents) {
-  const slowestDataset = indicators?.datasets?.slowest?.[0];
-  const topFailureDataset = indicators?.datasets?.mostFailures?.[0];
-  const topCause = indicators?.incidents?.byCauseType?.[0];
-  const criticalIncident = topIncidentBySeverity(incidents);
-  const latestRefresh = [...refreshes].sort(
-    (left, right) => String(right.startTime ?? "").localeCompare(String(left.startTime ?? "")),
-  )[0];
+  const slowestDataset = indicators.datasets?.slowest?.[0];
+  const failedDataset = indicators.datasets?.mostFailures?.[0];
+  const topCause = indicators.incidents?.byCauseType?.[0];
+  const totals = indicators.totals ?? {};
 
   const cards = [
     {
-      title: "Point chaud principal",
-      value: slowestDataset?.datasetName ?? "Aucun dataset critique",
+      label: "Anomalies de dur\u00e9e",
+      value: formatNumber(totals.durationAnomalies),
+      note: `${formatNumber(totals.inProgressRefreshes)} refresh(s) non termin\u00e9(s)`,
+    },
+    {
+      label: "Dataset le plus lent",
+      value: slowestDataset?.datasetName ?? "Aucun dataset",
       note: slowestDataset
-        ? `Duree moyenne ${formatDuration(slowestDataset.averageDurationSeconds)}`
-        : "Les donnees de duree ne sont pas disponibles.",
+        ? `Moyenne ${formatDuration(slowestDataset.averageDurationSeconds)}`
+        : "Aucune mesure disponible",
     },
     {
-      title: "Cause dominante",
-      value: topCause?.causeType ?? "Aucune cause dominante",
-      note: topCause ? `${formatNumber(topCause.count)} incidents rattaches` : "Aucun incident a classifier.",
+      label: "Dataset avec le plus d'\u00e9checs",
+      value: failedDataset?.datasetName ?? "Aucun dataset",
+      note: failedDataset
+        ? `${formatNumber(failedDataset.failureCount)} \u00e9chec(s)`
+        : "Aucune mesure disponible",
     },
     {
-      title: "Dataset le plus expose",
-      value: topFailureDataset?.datasetName ?? "Aucun echec remonte",
-      note: topFailureDataset
-        ? `${formatNumber(topFailureDataset.failureCount)} refresh(s) echoue(s)`
-        : "La serie ne contient pas d'echec.",
-    },
-    {
-      title: "Action prioritaire",
-      value: criticalIncident?.datasetName ?? latestRefresh?.datasetName ?? "Verifier le mode en cours",
-      note: criticalIncident
-        ? criticalIncident.recommendation ?? translateIncidentType(criticalIncident.incidentType)
-        : latestRefresh
-          ? `Dernier refresh: ${translateStatus(latestRefresh.status)}`
-          : "Aucune action n'a pu etre derivee.",
+      label: "Cause la plus fr\u00e9quente",
+      value: translateCause(topCause?.causeType ?? "Aucune cause"),
+      note: topCause ? `${formatNumber(topCause.count)} incident(s)` : "Aucun incident class\u00e9",
     },
   ];
 
   ui.highlightsGrid.innerHTML = cards.map((card) => `
     <article class="highlight-card">
-      <p class="highlight-label">${escapeHtml(card.title)}</p>
-      <h3>${escapeHtml(card.value)}</h3>
+      <span class="highlight-label">${escapeHtml(card.label)}</span>
+      <h4>${escapeHtml(card.value)}</h4>
       <p class="highlight-note">${escapeHtml(card.note)}</p>
     </article>
   `).join("");
 }
 
-function buildTable(headers, rows, allowHtml = false) {
-  if (!rows.length) {
-    return `<div class="empty-state">Aucune ligne disponible pour le moment.</div>`;
-  }
-
-  const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
-  const body = rows.map((row) => `
-    <tr>
-      ${row.map((cell) => `<td>${allowHtml ? cell : escapeHtml(cell)}</td>`).join("")}
-    </tr>
-  `).join("");
-
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-}
-
-function renderStatusBadge(status) {
-  const normalized = String(status ?? "").toLowerCase();
-  let className = "warning";
-  if (normalized === "completed") className = "success";
-  if (normalized === "failed") className = "failed";
-  return `<span class="badge ${className}">${escapeHtml(translateStatus(status))}</span>`;
-}
-
-function renderSeverityBadge(severity) {
-  const normalized = translateSeverity(severity).toLowerCase();
-  let className = "warning";
-  if (normalized === "haute") className = "failed";
-  if (normalized === "faible") className = "success";
-  return `<span class="badge ${className}">${escapeHtml(translateSeverity(severity))}</span>`;
-}
-
-function renderWorkspaceCards(workspaces, datasets, refreshes, incidents) {
+function renderWorkspaceCards(workspaces, refreshes, incidents) {
   if (!workspaces.length) {
-    ui.workspaceCards.innerHTML = `<div class="empty-state">Aucun workspace disponible.</div>`;
+    ui.workspaceCards.innerHTML = renderEmptyState("Aucun workspace disponible pour le moment.");
     return;
   }
 
   ui.workspaceCards.innerHTML = workspaces.map((workspace) => {
-    const workspaceDatasets = datasets.filter((item) => item.workspaceId === workspace.workspaceId);
-    const workspaceRefreshes = refreshes.filter((item) => item.workspaceId === workspace.workspaceId);
-    const workspaceIncidents = incidents.filter((item) => item.workspaceId === workspace.workspaceId);
+    const workspaceRefreshes = refreshes.filter(
+      (item) => item.workspaceId === workspace.id || item.workspaceId === workspace.workspaceId,
+    );
+    const workspaceIncidents = incidents.filter(
+      (item) => item.workspaceId === workspace.id || item.workspaceId === workspace.workspaceId,
+    );
+    const failedCount = workspaceRefreshes.filter(
+      (item) => String(item.status ?? "").toLowerCase() === "failed",
+    ).length;
+    const workspaceName = workspace.name ?? workspace.workspaceName ?? workspace.id ?? workspace.workspaceId ?? "Workspace";
+    const capacityMode = workspace.capacityMode ?? (workspace.is_on_dedicated_capacity ? "Dedicated" : "Shared");
+    const workspaceType = workspace.workspaceType ?? workspace.type ?? "Workspace";
+
     return `
-      <article class="info-card">
-        <div class="info-card-header">
-          <h3>${escapeHtml(workspace.workspaceName ?? workspace.workspaceId)}</h3>
-          <span class="mini-pill">${escapeHtml(workspace.capacityMode ?? "Shared")}</span>
+      <article class="workspace-card">
+        <span class="highlight-label">${escapeHtml(workspaceType)}</span>
+        <h4>${escapeHtml(workspaceName)}</h4>
+        <p class="workspace-meta">${escapeHtml(capacityMode)}</p>
+        <div class="workspace-stats">
+          <span class="stat-pill">${escapeHtml(formatNumber(workspaceRefreshes.length))} refresh(s)</span>
+          <span class="stat-pill">${escapeHtml(formatNumber(failedCount))} \u00e9chec(s)</span>
+          <span class="stat-pill">${escapeHtml(formatNumber(workspaceIncidents.length))} incident(s)</span>
         </div>
-        <p class="info-card-text">${escapeHtml(workspace.defaultDatasetStorageFormat ?? "N/A")} storage</p>
-        <dl class="mini-stats">
-          <div><dt>Datasets</dt><dd>${escapeHtml(formatNumber(workspaceDatasets.length))}</dd></div>
-          <div><dt>Refreshs</dt><dd>${escapeHtml(formatNumber(workspaceRefreshes.length))}</dd></div>
-          <div><dt>Incidents</dt><dd>${escapeHtml(formatNumber(workspaceIncidents.length))}</dd></div>
-        </dl>
       </article>
     `;
   }).join("");
 }
 
-function renderDatasetCards(datasets, refreshes, incidents) {
-  if (!datasets.length) {
-    ui.datasetCards.innerHTML = `<div class="empty-state">Aucun dataset disponible.</div>`;
+function renderHeroMeta(indicators, workspaces, refreshes) {
+  if (!indicators) {
+    ui.heroMeta.innerHTML = "";
     return;
   }
 
-  const cards = datasets.map((dataset) => {
-    const datasetRefreshes = refreshes.filter((item) => item.datasetId === dataset.datasetId);
-    const datasetIncidents = incidents.filter((item) => item.datasetId === dataset.datasetId);
-    const latestRefresh = [...datasetRefreshes].sort(
-      (left, right) => String(right.startTime ?? "").localeCompare(String(left.startTime ?? "")),
-    )[0];
-    const latestStatus = latestRefresh ? translateStatus(latestRefresh.status) : "N/A";
-    return {
-      dataset,
-      incidents: datasetIncidents.length,
-      latestStatus,
-      sources: (dataset.dataSourceTypes ?? []).join(", ") || "N/A",
-    };
-  }).sort((left, right) => right.incidents - left.incidents).slice(0, 4);
+  const totals = indicators.totals ?? {};
+  const latestRefresh = [...refreshes]
+    .sort((left, right) => String(right.startTime ?? "").localeCompare(String(left.startTime ?? "")))[0];
 
-  ui.datasetCards.innerHTML = cards.map((card) => `
-    <article class="info-card">
-      <div class="info-card-header">
-        <h3>${escapeHtml(card.dataset.datasetName ?? card.dataset.datasetId)}</h3>
-        <span class="mini-pill">${escapeHtml(formatNumber(card.incidents))} incident(s)</span>
-      </div>
-      <p class="info-card-text">${escapeHtml(card.dataset.workspaceName ?? card.dataset.workspaceId)}</p>
-      <p class="info-card-text">Sources: ${escapeHtml(card.sources)}</p>
-      <p class="info-card-text">Dernier statut: ${escapeHtml(card.latestStatus)}</p>
-    </article>
+  const pills = [
+    {
+      value: formatNumber(totals.refreshes),
+      label: "refreshs historis\u00e9s",
+    },
+    {
+      value: formatNumber(workspaces.length),
+      label: "workspaces suivis",
+    },
+    {
+      value: formatNumber(totals.incidents),
+      label: "incidents monitor\u00e9s",
+    },
+  ];
+
+  if (latestRefresh?.startTime) {
+    pills.push({
+      value: formatShortDate(latestRefresh.startTime),
+      label: "dernier refresh visible",
+    });
+  }
+
+  ui.heroMeta.innerHTML = pills.map((item) => `
+    <div class="hero-pill">
+      <strong>${escapeHtml(item.value)}</strong>
+      <span>${escapeHtml(item.label)}</span>
+    </div>
   `).join("");
 }
 
-function renderList(container, items, renderItem) {
-  if (!items?.length) {
-    container.innerHTML = `<div class="empty-state">Aucune donnee disponible pour le moment.</div>`;
-    return;
+function normalizeCollection(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
   }
-  container.innerHTML = items.map(renderItem).join("");
+  return payload?.value ?? [];
 }
 
-function renderSlowDatasets(indicators) {
-  renderList(
-    ui.slowDatasets,
-    indicators?.datasets?.slowest ?? [],
-    (item) => `
-      <article class="list-item">
-        <strong>${escapeHtml(item.datasetName ?? item.datasetId)}</strong>
-        <p class="list-note">Moyenne ${formatDuration(item.averageDurationSeconds)} | Maximum ${formatDuration(item.maxDurationSeconds)}</p>
-        <div class="stat-row">
-          <span class="stat-pill">${escapeHtml(formatNumber(item.refreshCount))} refresh(s)</span>
-        </div>
-      </article>
-    `,
-  );
+function updateReactIslands(payload) {
+  if (window.dashboardGraphs?.update) {
+    window.dashboardGraphs.update(payload
+      ? {
+        ...(payload.indicators ?? {}),
+        datasets: payload.datasets ?? [],
+        fabricExecutions: payload.fabricExecutions ?? [],
+        fabricItems: payload.fabricItems ?? [],
+        fabricSqlExecutions: payload.fabricSqlExecutions ?? [],
+        incidents: payload.incidents ?? [],
+        reports: payload.reports ?? [],
+        refreshes: payload.refreshes ?? [],
+      }
+      : null);
+  }
+  panelsBridge.current = payload;
+  if (typeof panelsBridge.update === "function") {
+    panelsBridge.update(payload);
+  }
 }
 
-function renderFailedDatasets(indicators) {
-  renderList(
-    ui.failedDatasets,
-    indicators?.datasets?.mostFailures ?? [],
-    (item) => `
-      <article class="list-item">
-        <strong>${escapeHtml(item.datasetName ?? item.datasetId)}</strong>
-        <p class="list-note">${escapeHtml(formatNumber(item.failureCount))} refresh(s) echoue(s)</p>
-      </article>
-    `,
-  );
-}
-
-function renderIncidentBreakdowns(indicators) {
-  renderList(
-    ui.gatewayIncidents,
-    indicators?.incidents?.byGateway ?? [],
-    (item) => `
-      <article class="list-item">
-        <strong>${escapeHtml(item.gatewayId ?? "Gateway inconnue")}</strong>
-        <p class="list-note">${escapeHtml(formatNumber(item.count))} incident(s)</p>
-      </article>
-    `,
-  );
-
-  renderList(
-    ui.capacityIncidents,
-    indicators?.incidents?.byCapacity ?? [],
-    (item) => `
-      <article class="list-item">
-        <strong>${escapeHtml(item.capacityId ?? "Capacite partagee")}</strong>
-        <p class="list-note">${escapeHtml(formatNumber(item.count))} incident(s)</p>
-      </article>
-    `,
-  );
-
-  const credentialsRelated = indicators?.incidents?.credentialsRelated ?? 0;
-  const totalIncidents = indicators?.totals?.incidents ?? 0;
-  ui.credentialsIncidents.innerHTML = `
-    <div class="metric-chip">
-      <span>Incidents credentials</span>
-      <strong>${escapeHtml(formatNumber(credentialsRelated))}</strong>
-    </div>
-    <div class="metric-chip">
-      <span>Part dans les incidents</span>
-      <strong>${escapeHtml(totalIncidents ? formatRate(credentialsRelated / totalIncidents) : "0,0%")}</strong>
-    </div>
-  `;
-
-  renderList(
-    ui.dataSourceIncidents,
-    indicators?.incidents?.byDataSource ?? [],
-    (item) => `
-      <article class="list-item">
-        <strong>${escapeHtml(item.datasourceType ?? "Source inconnue")}</strong>
-        <p class="list-note">${escapeHtml(formatNumber(item.count))} incident(s)</p>
-      </article>
-    `,
-  );
-}
-
-function renderRefreshTable(refreshes) {
-  const rows = refreshes.map((item) => [
-    item.datasetName ?? item.datasetId,
-    item.workspaceName ?? item.workspaceId,
-    renderStatusBadge(item.status),
-    formatDuration(item.durationSeconds),
-    formatTimestamp(item.startTime),
-    item.errorCode ?? item.errorMessage ?? "Aucune erreur",
-  ]);
-
-  ui.refreshTable.innerHTML = buildTable(
-    ["Dataset", "Workspace", "Statut", "Duree", "Debut", "Detail"],
-    rows,
-    true,
-  );
-}
-
-function renderIncidentTable(incidents) {
-  const rows = incidents.map((item) => [
-    translateIncidentType(item.incidentType),
-    item.datasetName ?? item.datasetId,
-    renderSeverityBadge(item.severity),
-    item.suspectedCause ?? "N/A",
-    formatTimestamp(item.detectedAt),
-    item.recommendation ?? "N/A",
-  ]);
-
-  ui.incidentTable.innerHTML = buildTable(
-    ["Incident", "Dataset", "Severite", "Cause", "Detection", "Recommandation"],
-    rows,
-    true,
-  );
+function renderEmptyDashboard(message) {
+  ui.heroMeta.innerHTML = "";
+  ui.summaryGrid.innerHTML = renderEmptyState(message);
+  ui.highlightsGrid.innerHTML = renderEmptyState("Aucune synth\u00e8se disponible.");
+  ui.workspaceCards.innerHTML = renderEmptyState("Aucun workspace disponible.");
+  updateReactIslands({
+    datasets: [],
+    fabricExecutions: [],
+    fabricItems: [],
+    fabricSqlExecutions: [],
+    indicators: null,
+    incidents: [],
+    reports: [],
+    refreshes: [],
+    totalRefreshes: 0,
+    workspaces: [],
+  });
 }
 
 async function fetchJson(url, options) {
@@ -465,100 +408,121 @@ function resultError(label, result) {
   return `${label}: ${result.reason?.message ?? "erreur inconnue"}`;
 }
 
-function renderEmptyDashboard(message) {
-  ui.countStrip.innerHTML = "";
-  ui.summaryGrid.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
-  ui.highlightsGrid.innerHTML = `<div class="empty-state">Aucun point cle ne peut etre calcule.</div>`;
-  ui.workspaceCards.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.datasetCards.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.slowDatasets.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.failedDatasets.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.gatewayIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.capacityIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.credentialsIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.dataSourceIncidents.innerHTML = `<div class="empty-state">Aucune donnee a afficher.</div>`;
-  ui.refreshTable.innerHTML = `<div class="empty-state">Aucun refresh a afficher.</div>`;
-  ui.incidentTable.innerHTML = `<div class="empty-state">Aucun incident a afficher.</div>`;
-}
-
 async function loadDashboard() {
-  setStatus("Chargement du tableau de bord PoC...");
+  if (isLoadingDashboard) {
+    return;
+  }
+
+  isLoadingDashboard = true;
+  panelsBridge.isLoadingMore = false;
+  ui.reloadButton.disabled = true;
+  setStatus("Chargement des indicateurs de monitoring...");
 
   try {
-    const modePayload = await fetchJson(endpoints.mode);
-    renderEnvironment(modePayload);
-
     const results = await Promise.allSettled([
       fetchJson(endpoints.indicators),
+      fetchJson(endpoints.incidents),
+      fetchJson(`${endpoints.refreshes}${refreshLimit}`),
       fetchJson(endpoints.workspaces),
       fetchJson(endpoints.datasets),
-      fetchJson(endpoints.refreshes),
-      fetchJson(endpoints.incidents),
+      fetchJson(endpoints.reports),
+      fetchJson(endpoints.fabricItems),
+      fetchJson(endpoints.fabricExecutions),
+      fetchJson(endpoints.fabricSqlExecutions),
     ]);
 
     const indicators = fulfilledValue(results[0]);
-    const workspaces = fulfilledValue(results[1])?.value ?? [];
-    const datasets = fulfilledValue(results[2])?.value ?? [];
-    const refreshes = fulfilledValue(results[3])?.value ?? [];
-    const incidents = fulfilledValue(results[4])?.value ?? [];
+    const incidents = normalizeCollection(fulfilledValue(results[1]));
+    const refreshes = normalizeCollection(fulfilledValue(results[2]));
+    const workspaces = normalizeCollection(fulfilledValue(results[3]));
+    const datasets = normalizeCollection(fulfilledValue(results[4]));
+    const reports = normalizeCollection(fulfilledValue(results[5]));
+    const fabricItems = normalizeCollection(fulfilledValue(results[6]));
+    const fabricExecutions = normalizeCollection(fulfilledValue(results[7]));
+    const fabricSqlExecutions = normalizeCollection(fulfilledValue(results[8]));
+    const totalRefreshes = Number(indicators?.totals?.refreshes ?? refreshes.length);
     const errors = [
       resultError("Indicateurs", results[0]),
-      resultError("Workspaces", results[1]),
-      resultError("Datasets", results[2]),
-      resultError("Refreshs", results[3]),
-      resultError("Incidents", results[4]),
+      resultError("Incidents", results[1]),
+      resultError("Refreshs", results[2]),
+      resultError("Workspaces", results[3]),
+      resultError("Datasets", results[4]),
+      resultError("Rapports", results[5]),
+      resultError("Items Fabric", results[6]),
+      resultError("Ex\u00e9cutions Fabric", results[7]),
+      resultError("SQL Fabric", results[8]),
     ].filter(Boolean);
 
-    renderCountStrip(modePayload, indicators, workspaces, datasets, refreshes, incidents);
     renderSummary(indicators);
-    renderHighlights(indicators, refreshes, incidents);
-    renderWorkspaceCards(workspaces, datasets, refreshes, incidents);
-    renderDatasetCards(datasets, refreshes, incidents);
-    renderSlowDatasets(indicators);
-    renderFailedDatasets(indicators);
-    renderIncidentBreakdowns(indicators);
-    renderRefreshTable(refreshes);
-    renderIncidentTable(incidents);
+    renderHighlights(indicators);
+    renderHeroMeta(indicators, workspaces, refreshes);
+    renderWorkspaceCards(workspaces, refreshes, incidents);
+    updateReactIslands({
+      datasets,
+      fabricExecutions,
+      fabricItems,
+      fabricSqlExecutions,
+      indicators,
+      incidents,
+      reports,
+      refreshes,
+      totalRefreshes,
+      workspaces,
+    });
 
     if (errors.length) {
-      setStatus(`Chargement partiel: ${errors.length} source(s) indisponible(s).`, true);
+      setStatus(`Chargement partiel : ${errors.length} source(s) indisponible(s).`, true);
     } else {
-      setStatus(
-        `Chargement termine: ${formatNumber(refreshes.length)} refresh(s), ${formatNumber(incidents.length)} incident(s), ${formatNumber(datasets.length)} dataset(s).`
-      );
+      setStatus("Chargement termin\u00e9.");
     }
   } catch (error) {
     console.error(error);
-    renderEnvironment({
-      mode: "unknown",
-      title: "Dashboard indisponible",
-      description: "Impossible de charger le mode d'execution du service.",
-    });
-    renderEmptyDashboard("Le service n'a pas repondu correctement.");
-    setStatus(`Echec du chargement du dashboard: ${error.message}`, true);
+    renderEmptyDashboard("Le service n'a pas r\u00e9pondu correctement.");
+    setStatus(`\u00c9chec du chargement du dashboard : ${error.message}`, true);
+  } finally {
+    isLoadingDashboard = false;
+    panelsBridge.isLoadingMore = false;
+    ui.reloadButton.disabled = false;
   }
 }
 
 async function syncMonitoring() {
   ui.syncButton.disabled = true;
   try {
-    setStatus(appMode === "demo"
-      ? "Regeneration du snapshot ..."
-      : "Synchronisation du monitoring en cours...");
-    const result = await fetchJson(endpoints.sync, { method: "POST" });
-    setStatus(
-      `Synchronisation terminee: ${formatNumber(result.counts?.workspaces)} workspaces, ${formatNumber(result.counts?.datasets)} datasets, ${formatNumber(result.counts?.refreshes)} refreshs.`
-    );
+    setStatus("Synchronisation du monitoring en cours...");
+    await fetchJson(endpoints.sync, { method: "POST" });
     await loadDashboard();
   } catch (error) {
     console.error(error);
-    setStatus(`La synchronisation a echoue: ${error.message}`, true);
+    setStatus(`La synchronisation a \u00e9chou\u00e9 : ${error.message}`, true);
   } finally {
     ui.syncButton.disabled = false;
   }
 }
 
+panelsBridge.requestMore = async function requestMoreRefreshes() {
+  if (isLoadingDashboard) {
+    return;
+  }
+  panelsBridge.isLoadingMore = true;
+  refreshLimit += refreshStep;
+  await loadDashboard();
+};
+
+ui.navLinks.forEach((link) => {
+  link.addEventListener("click", () => {
+    const target = link.dataset.viewTarget ?? "indicators";
+    if (window.location.hash.replace("#", "") !== target) {
+      window.location.hash = target;
+      return;
+    }
+    activateView(target);
+  });
+});
+
+window.addEventListener("hashchange", activateViewFromHash);
 ui.syncButton.addEventListener("click", syncMonitoring);
 ui.reloadButton.addEventListener("click", loadDashboard);
 
+activateViewFromHash();
 loadDashboard();

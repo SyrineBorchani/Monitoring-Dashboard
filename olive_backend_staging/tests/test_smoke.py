@@ -14,7 +14,7 @@ from tests.support import (
 def test_ui_routes_smoke(test_client: TestClient) -> None:
     health = test_client.get("/health")
     assert health.status_code == 200
-    assert health.json() == {"status": "ok"}
+    assert health.json() == {"status": "ok", "database": "ok"}
 
     home = test_client.get("/", follow_redirects=False)
     assert home.status_code == 307
@@ -24,6 +24,7 @@ def test_ui_routes_smoke(test_client: TestClient) -> None:
     assert dashboard.status_code == 200
     assert "Monitoring Dashboard" in dashboard.text
     assert "/static/dashboard.js" in dashboard.text
+    assert "/static/dashboard-graphs.js" in dashboard.text
 
 
 def test_stored_endpoints_and_offline_indicators_smoke(
@@ -90,6 +91,9 @@ def test_sync_and_live_indicators_smoke(test_client: TestClient) -> None:
         "datasets": 1,
         "refreshes": 2,
         "incidents": 3,
+        "fabricItems": 2,
+        "fabricExecutions": 2,
+        "fabricSqlExecutions": 1,
     }
 
     indicators_response = test_client.get(
@@ -103,6 +107,19 @@ def test_sync_and_live_indicators_smoke(test_client: TestClient) -> None:
     assert indicator_payload["incidents"]["byGateway"] == [
         {"gatewayId": "gateway-1", "count": 3}
     ]
+
+
+def test_import_fabric_sql_executions_endpoint_smoke(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/powerbi/fabric/sql-executions/import",
+        json={"items": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["counts"] == {
+        "fabricItemsMatched": 2,
+        "fabricSqlExecutions": 1,
+    }
 
 
 def test_offline_endpoints_return_empty_results_for_empty_storage(
@@ -198,5 +215,9 @@ def test_upstream_request_exception_returns_502(
     ) as client:
         response = client.get("/api/powerbi/workspaces")
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "network unavailable"}
+    assert response.status_code == 200
+    assert response.json()["mode"] == "cached"
+    assert response.json()["warning"] == (
+        "Live Power BI data was unavailable. Returned cached data instead."
+    )
+    assert len(response.json()["value"]) == 1
