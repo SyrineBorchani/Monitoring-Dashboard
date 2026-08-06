@@ -12,12 +12,11 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 
-def _is_truthy(value: str) -> bool:
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def is_demo_mode() -> bool:
-    return _is_truthy(os.getenv("POC_MODE", "false"))
 
 
 def _require_env(name: str) -> str:
@@ -47,8 +46,17 @@ class Settings:
     client_id: str
     client_secret: str
     powerbi_base_url: str
+    fabric_base_url: str
     database_url: str
     powerbi_scope: str = "https://analysis.windows.net/powerbi/api/.default"
+    fabric_scope: str = "https://api.fabric.microsoft.com/.default"
+    fabric_sql_monitoring_enabled: bool = False
+    fabric_sql_source: str = "auto"
+    fabric_sql_notebook_export_path: str = ""
+    fabric_sql_odbc_driver: str = "ODBC Driver 18 for SQL Server"
+    fabric_sql_connect_timeout: int = 15
+    fabric_sql_command_timeout: int = 30
+    fabric_sql_top: int = 50
 
     @property
     def token_url(self) -> str:
@@ -83,5 +91,35 @@ def get_settings() -> Settings:
             "POWERBI_BASE_URL",
             "https://api.powerbi.com/v1.0/myorg",
         ).rstrip("/"),
+        fabric_base_url=os.getenv(
+            "FABRIC_BASE_URL",
+            "https://api.fabric.microsoft.com/v1",
+        ).rstrip("/"),
         database_url=database_url,
+        powerbi_scope=os.getenv(
+            "POWERBI_SCOPE",
+            "https://analysis.windows.net/powerbi/api/.default",
+        ),
+        fabric_scope=os.getenv(
+            "FABRIC_SCOPE",
+            "https://api.fabric.microsoft.com/.default",
+        ),
+        fabric_sql_monitoring_enabled=_env_flag("FABRIC_SQL_MONITORING_ENABLED"),
+        fabric_sql_source=os.getenv("FABRIC_SQL_SOURCE", "auto").strip().lower() or "auto",
+        fabric_sql_notebook_export_path=os.getenv(
+            "FABRIC_SQL_NOTEBOOK_EXPORT_PATH",
+            "",
+        ).strip(),
+        fabric_sql_odbc_driver=os.getenv(
+            "FABRIC_SQL_ODBC_DRIVER",
+            "ODBC Driver 18 for SQL Server",
+        ).strip()
+        or "ODBC Driver 18 for SQL Server",
+        fabric_sql_connect_timeout=int(
+            os.getenv("FABRIC_SQL_CONNECT_TIMEOUT", "15")
+        ),
+        fabric_sql_command_timeout=int(
+            os.getenv("FABRIC_SQL_COMMAND_TIMEOUT", "30")
+        ),
+        fabric_sql_top=int(os.getenv("FABRIC_SQL_TOP", "50")),
     )
