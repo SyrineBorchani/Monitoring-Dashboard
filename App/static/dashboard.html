@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitoring Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css?v=20260806-31">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <p class="brand-kicker">OliveSoft</p>
+        <h1>Monitoring Dashboard</h1>
+        <p class="brand-copy">
+          Une lecture plus visuelle des refreshs, incidents et signaux faibles du
+          workspace.
+        </p>
+      </div>
+
+      <nav class="side-nav" aria-label="Navigation du dashboard">
+        <button class="nav-link is-active" data-view-target="indicators" type="button">
+          <span class="nav-index">01</span>
+          <span class="nav-copy">
+            <strong>Indicateurs</strong>
+            <small>Vue synth&egrave;se des KPI et tendances principales</small>
+          </span>
+        </button>
+        <button class="nav-link" data-view-target="performance" type="button">
+          <span class="nav-index">02</span>
+          <span class="nav-copy">
+            <strong>Performance</strong>
+            <small>Graphes, d&eacute;lais, dur&eacute;es et tendances de refresh</small>
+          </span>
+        </button>
+        <button class="nav-link" data-view-target="fabric" type="button">
+          <span class="nav-index">03</span>
+          <span class="nav-copy">
+            <strong>Fabric</strong>
+            <small>Warehouses, lakehouses, ex&eacute;cutions SQL et activit&eacute; Fabric</small>
+          </span>
+        </button>
+        <button class="nav-link" data-view-target="incidents" type="button">
+          <span class="nav-index">04</span>
+          <span class="nav-copy">
+            <strong>Incidents</strong>
+            <small>Causes, s&eacute;v&eacute;rit&eacute;s et zones techniques &agrave; surveiller</small>
+          </span>
+        </button>
+      </nav>
+    </aside>
+
+    <main class="workspace-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Monitoring Power BI</p>
+          <h2>Indicateurs de monitoring</h2>
+          <p class="hero-text">
+            Vue &eacute;pur&eacute;e des refreshs, anomalies et incidents, organis&eacute;e autour
+            des indicateurs attendus.
+          </p>
+          <div id="heroMeta" class="hero-pills"></div>
+        </div>
+
+        <div class="topbar-actions">
+          <button id="syncButton" class="action-button primary" type="button">
+            Synchroniser
+          </button>
+          <button id="reloadButton" class="action-button secondary" type="button">
+            Recharger
+          </button>
+        </div>
+      </header>
+
+      <div class="status-shell">
+        <p id="statusMessage" class="status-message">Chargement en cours...</p>
+      </div>
+
+      <section class="view-shell">
+        <section class="view-panel is-active" data-view-panel="indicators">
+          <div class="view-grid">
+            <article class="panel span-12">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">Synth&egrave;se</p>
+                  <h3>Indicateurs principaux</h3>
+                </div>
+              </div>
+              <div id="summaryGrid" class="summary-grid"></div>
+            </article>
+
+            <article class="panel span-12">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">Lecture rapide</p>
+                  <h3>Vue d'ensemble des r&eacute;sultats</h3>
+                </div>
+              </div>
+              <div id="highlightsGrid" class="highlight-grid"></div>
+            </article>
+
+            <article class="panel span-12">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">Couverture</p>
+                  <h3>Workspaces suivis</h3>
+                </div>
+              </div>
+              <div id="workspaceCards" class="workspace-grid"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view-panel="performance">
+          <div class="view-grid">
+            <article class="panel span-12">
+              <div id="reactGraphsRoot" class="react-graphs-root"></div>
+            </article>
+
+            <article class="panel span-12">
+              <div id="reactPerformanceRoot" class="react-panel-root"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view-panel="fabric">
+          <div class="view-grid">
+            <article class="panel span-12">
+              <div id="reactFabricRoot" class="react-panel-root"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-panel" data-view-panel="incidents">
+          <div class="view-grid">
+            <article class="panel span-12">
+              <div id="reactIncidentsRoot" class="react-panel-root"></div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
+  <script src="/static/dashboard-graphs.js?v=20260806-31"></script>
+  <script src="/static/dashboard.js?v=20260806-31"></script>
+</body>
+</html>
