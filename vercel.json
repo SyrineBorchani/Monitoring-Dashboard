@@ -10,7 +10,7 @@
     },
     {
       "source": "/api/:path*",
-      "destination": "https://your-render-service.onrender.com/api/:path*"
+      "destination": "https://monitoring-dashboard-8p9w.onrender.com/api/:path*"
     },
     {
       "source": "/dashboard",
