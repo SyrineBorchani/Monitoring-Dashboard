@@ -567,24 +567,74 @@
     });
   }
 
-  function collectGraphDateKeys(indicators) {
-    if (!indicators) {
-      return [];
+  function normalizeGraphRefreshTimelineItem(item) {
+    const timestamp = item?.timestamp || item?.startTime || "";
+    if (!timestamp) {
+      return null;
     }
-    const refreshDates = (indicators.trends?.refreshTimeline ?? [])
-      .map((item) => formatDateKey(item.timestamp))
-      .filter(Boolean);
-    const dailyDates = (indicators.trends?.dailyRefreshPerformance ?? [])
-      .map((item) => item.date)
-      .filter(Boolean);
-    const storedRefreshDates = (indicators.refreshes ?? [])
-      .map((item) => formatDateKey(item.startTime))
-      .filter(Boolean);
-    return [...refreshDates, ...dailyDates, ...storedRefreshDates].sort();
+    const durationSeconds = Number(item?.durationSeconds);
+    if (!Number.isFinite(durationSeconds)) {
+      return null;
+    }
+    return {
+      timestamp,
+      datasetId: item?.datasetId || "",
+      datasetName: item?.datasetName || "",
+      workspaceName: item?.workspaceName || "",
+      status: item?.status || "",
+      isDelayed: Boolean(item?.isDelayed),
+      durationSeconds,
+    };
   }
 
-  function getGraphBounds(indicators) {
-    const keys = collectGraphDateKeys(indicators);
+  function buildGraphRefreshTimeline(payload) {
+    if (!payload) {
+      return [];
+    }
+
+    const normalized = [
+      ...(payload.trends?.refreshTimeline ?? []),
+      ...(payload.refreshes ?? []),
+    ]
+      .map(normalizeGraphRefreshTimelineItem)
+      .filter(Boolean);
+
+    const uniqueTimeline = new Map();
+    normalized.forEach((item) => {
+      const key = [
+        item.timestamp,
+        item.datasetId || item.datasetName,
+        item.durationSeconds,
+        String(item.status || "").toLowerCase(),
+      ].join("|");
+
+      if (!uniqueTimeline.has(key)) {
+        uniqueTimeline.set(key, item);
+      }
+    });
+
+    return [...uniqueTimeline.values()].sort(
+      (left, right) => String(left.timestamp ?? "").localeCompare(String(right.timestamp ?? "")),
+    );
+  }
+
+  function collectGraphDateKeys(payload) {
+    if (!payload) {
+      return [];
+    }
+
+    const refreshDates = buildGraphRefreshTimeline(payload)
+      .map((item) => formatDateKey(item.timestamp))
+      .filter(Boolean);
+    const dailyDates = (payload.trends?.dailyRefreshPerformance ?? [])
+      .map((item) => item.date)
+      .filter(Boolean);
+
+    return [...new Set([...refreshDates, ...dailyDates])].sort();
+  }
+
+  function getGraphBounds(payload) {
+    const keys = collectGraphDateKeys(payload);
     if (!keys.length) {
       return null;
     }
@@ -1807,6 +1857,7 @@
     const [preset, setPreset] = useState("30d");
     const [range, setRange] = useState({ from: "", to: "" });
     const [selectedReport, setSelectedReport] = useState(null);
+    const refreshTimelineSource = useMemo(() => buildGraphRefreshTimeline(payload), [payload]);
     const bounds = useMemo(() => getGraphBounds(payload), [payload]);
 
     useEffect(() => {
@@ -1842,7 +1893,7 @@
           activeRange.to,
         ),
         refreshTimeline: filterItemsByDateRange(
-          payload.trends?.refreshTimeline ?? [],
+          refreshTimelineSource,
           (item) => formatDateKey(item.timestamp),
           activeRange.from,
           activeRange.to,
@@ -1854,7 +1905,7 @@
           activeRange.to,
         ),
       };
-    }, [payload, bounds, range]);
+    }, [payload, bounds, range, refreshTimelineSource]);
 
     const reportSeries = useMemo(
       () => buildReportSeries(
@@ -1865,6 +1916,14 @@
         graphData.to,
       ),
       [graphData],
+    );
+    const availableDayCount = useMemo(
+      () => (bounds ? enumerateDateKeys(bounds.min, bounds.max).length : 0),
+      [bounds],
+    );
+    const visibleDayCount = useMemo(
+      () => (graphData.from && graphData.to ? enumerateDateKeys(graphData.from, graphData.to).length : 0),
+      [graphData.from, graphData.to],
     );
     const activeReportId = selectedReport ?? null;
 
@@ -1888,6 +1947,25 @@
     return h("div", { className: "react-graphs-shell" }, [
       h("div", { className: "react-filter-shell", key: "filters" }, [
         h("p", { className: "panel-kicker react-filter-kicker", key: "label" }, "P\u00e9riode"),
+        bounds
+          ? h("div", { className: "react-filter-topline", key: "summary" }, [
+            h(GlassPill, {
+              key: "window",
+              label: "Plage active",
+              value: `${formatShortDate(graphData.from)} - ${formatShortDate(graphData.to)}`,
+            }),
+            h(GlassPill, {
+              key: "days",
+              label: "Jours visibles",
+              value: formatNumber(visibleDayCount),
+            }),
+            h(GlassPill, {
+              key: "history",
+              label: "Historique charg\u00e9",
+              value: formatNumber(availableDayCount),
+            }),
+          ])
+          : null,
         h(
           "div",
           { className: "react-preset-row", key: "preset-row" },
@@ -1903,7 +1981,13 @@
                 type: "button",
                 key: option.value,
                 className: `preset-chip ${preset === option.value ? "is-active" : ""}`.trim(),
-                onClick: () => setPreset(option.value),
+                "aria-pressed": preset === option.value,
+                onClick: () => {
+                  setPreset(option.value);
+                  if (bounds) {
+                    setRange(computePresetRange(option.value, bounds));
+                  }
+                },
               },
               option.label,
             ),
