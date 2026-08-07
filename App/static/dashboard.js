@@ -3,7 +3,7 @@ const endpoints = {
   datasets: "/api/powerbi/storage/datasets",
   fabricExecutions: "/api/powerbi/storage/fabric/executions?limit=40",
   fabricItems: "/api/powerbi/storage/fabric/items",
-  fabricSqlExecutions: "/api/powerbi/storage/fabric/sql-executions?limit=40",
+  fabricSqlExecutions: "/api/powerbi/storage/fabric/sql-executions?limit=500",
   incidents: "/api/powerbi/storage/incidents?limit=30",
   reports: "/api/powerbi/reports",
   refreshes: "/api/powerbi/storage/refreshes?limit=",

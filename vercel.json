@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "framework": null,
+  "outputDirectory": "App/static",
+  "rewrites": [
+    {
+      "source": "/static/:path*",
+      "destination": "/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://your-render-service.onrender.com/api/:path*"
+    },
+    {
+      "source": "/dashboard",
+      "destination": "/"
+    }
+  ]
+}

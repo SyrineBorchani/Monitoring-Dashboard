@@ -25,6 +25,7 @@ SELECT TOP ({top})
     end_time,
     statement_type,
     total_elapsed_time_ms,
+    program_name,
     status,
     login_name,
     command,

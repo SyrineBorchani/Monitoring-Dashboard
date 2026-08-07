@@ -10,9 +10,13 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
 def _dashboard_path() -> Path:
-    dashboard_path = STATIC_DIR / "dashboard.html"
+    candidates = [
+        STATIC_DIR / "dashboard.html",
+        STATIC_DIR / "index.html",
+    ]
+    dashboard_path = next((path for path in candidates if path.is_file()), None)
 
-    if not dashboard_path.is_file():
+    if dashboard_path is None:
         raise HTTPException(status_code=404, detail="Dashboard asset not found.")
 
     try:
