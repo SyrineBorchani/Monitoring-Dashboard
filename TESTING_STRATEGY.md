@@ -1,6 +1,5 @@
 # TESTING_STRATEGY
 
-Generated on 2026-08-04 from the current codebase and test suite.
 
 ## Goal
 
@@ -177,18 +176,3 @@ Current result at generation time:
 
 - `69 passed` on August 4, 2026
 
-## Remaining Gaps
-
-Still recommended:
-
-- browser E2E tests for the dashboard UI
-- query and rendering tests around partial API failure in a real browser
-- process-level startup tests that exercise Uvicorn or the deployed host
-- performance tests for large refresh and incident histories
-- live-tenant verification of Power BI throttling, auth scopes, and workspace permissions
-
-## Operational Notes
-
-- The integration suite creates and destroys isolated temporary PostgreSQL databases.
-- These tests assume the configured PostgreSQL user can create databases.
-- The default suite intentionally avoids live Microsoft network calls.
