@@ -32,6 +32,8 @@
 
   const graphsBridge = createBridge("dashboardGraphs");
   const panelsBridge = createBridge("dashboardPanels");
+  const SQL_SLOW_FACTOR = 1.5;
+  const HIGH_SQL_VARIANCE_COEFFICIENT_THRESHOLD = 1.0;
 
   function useBridgePayload(bridge) {
     const [payload, setPayload] = useState(bridge.current);
@@ -63,6 +65,20 @@
       return `${(seconds / 60).toFixed(1).replace(".", ",")} min`;
     }
     return `${seconds.toFixed(0)} s`;
+  }
+
+  function formatSqlDuration(value) {
+    if (value == null) {
+      return "N/A";
+    }
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds)) {
+      return "N/A";
+    }
+    if (seconds < 1) {
+      return `${Math.round(seconds * 1000)} ms`;
+    }
+    return formatDuration(seconds);
   }
 
   function formatRate(value) {
@@ -382,6 +398,150 @@
       .sort((left, right) => right.averageDurationSeconds - left.averageDurationSeconds);
   }
 
+  function normalizeStatementType(statementType) {
+    const normalized = String(statementType ?? "").trim().toUpperCase();
+    return normalized || "UNKNOWN";
+  }
+
+  function computeMedian(values) {
+    if (!values.length) {
+      return null;
+    }
+    const sorted = [...values].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) {
+      return (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+    return sorted[middle];
+  }
+
+  function roundMetric(value) {
+    if (value == null || Number.isNaN(Number(value))) {
+      return null;
+    }
+    return Math.round(Number(value) * 100) / 100;
+  }
+
+  function buildFabricSqlStatementGroups(sqlExecutions) {
+    const groups = new Map();
+
+    sqlExecutions.forEach((item) => {
+      const key = normalizeStatementType(item.statementType);
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key).push(item);
+    });
+
+    return [...groups.entries()]
+      .map(([statementType, executions]) => {
+        const durations = executions
+          .map((item) => Number(item.durationSeconds))
+          .filter((value) => Number.isFinite(value));
+        const averageDurationSeconds = durations.length
+          ? durations.reduce((total, value) => total + value, 0) / durations.length
+          : null;
+        const medianDurationSeconds = computeMedian(durations);
+        const varianceSeconds = durations.length > 1 && averageDurationSeconds != null
+          ? durations.reduce(
+            (total, value) => total + ((value - averageDurationSeconds) ** 2),
+            0,
+          ) / durations.length
+          : 0;
+        const varianceCoefficient = averageDurationSeconds
+          ? Math.sqrt(varianceSeconds) / averageDurationSeconds
+          : 0;
+        const baselineMethod = durations.length > 1 && varianceCoefficient >= HIGH_SQL_VARIANCE_COEFFICIENT_THRESHOLD
+          ? "average"
+          : "median";
+        const baselineDurationSeconds = baselineMethod === "average"
+          ? averageDurationSeconds
+          : medianDurationSeconds;
+        const slowThresholdSeconds = baselineDurationSeconds != null
+          ? baselineDurationSeconds * SQL_SLOW_FACTOR
+          : null;
+        const slowExecutionCount = durations.filter(
+          (value) => slowThresholdSeconds != null && value > slowThresholdSeconds,
+        ).length;
+        const latestExecution = [...executions].sort(
+          (left, right) => String(right.startTime ?? "").localeCompare(String(left.startTime ?? "")),
+        )[0];
+
+        return {
+          statementType,
+          executionCount: executions.length,
+          averageDurationSeconds: roundMetric(averageDurationSeconds),
+          medianDurationSeconds: roundMetric(medianDurationSeconds),
+          varianceSeconds: roundMetric(varianceSeconds),
+          varianceCoefficient: roundMetric(varianceCoefficient),
+          baselineMethod,
+          baselineDurationSeconds: roundMetric(baselineDurationSeconds),
+          slowThresholdSeconds: roundMetric(slowThresholdSeconds),
+          slowExecutionCount,
+          maximumDurationSeconds: roundMetric(
+            durations.length ? Math.max(...durations) : null,
+          ),
+          lastSeenAt: latestExecution?.startTime || latestExecution?.endTime || "",
+          programNames: [...new Set(
+            executions
+              .map((item) => String(item.programName ?? "").trim())
+              .filter(Boolean),
+          )].sort(),
+        };
+      })
+      .sort((left, right) => (
+        Number(right.slowExecutionCount ?? 0) - Number(left.slowExecutionCount ?? 0)
+        || Number(right.executionCount ?? 0) - Number(left.executionCount ?? 0)
+        || Number(right.maximumDurationSeconds ?? 0) - Number(left.maximumDurationSeconds ?? 0)
+        || String(left.statementType ?? "").localeCompare(String(right.statementType ?? ""))
+      ));
+  }
+
+  function labelBaselineMethod(method) {
+    return method === "average" ? "moyenne" : "m\u00e9diane";
+  }
+
+  function describeSqlExecutionAnomaly(execution, group) {
+    const duration = Number(execution?.durationSeconds);
+    if (!group || !Number.isFinite(duration)) {
+      return {
+        isSlow: false,
+        badgeVariant: "warning",
+        label: "Sans base",
+        note: "Dur\u00e9e ou groupe indisponible",
+      };
+    }
+
+    const threshold = Number(group.slowThresholdSeconds);
+    const baseline = Number(group.baselineDurationSeconds);
+    const methodLabel = labelBaselineMethod(group.baselineMethod);
+
+    if (!Number.isFinite(threshold) || !Number.isFinite(baseline) || baseline <= 0) {
+      return {
+        isSlow: false,
+        badgeVariant: "warning",
+        label: "Sans base",
+        note: "Historique insuffisant pour d\u00e9tecter un ralentissement",
+      };
+    }
+
+    if (duration > threshold) {
+      return {
+        isSlow: true,
+        badgeVariant: "warning",
+        label: "Lent",
+        note: `Seuil ${formatSqlDuration(threshold)} via ${methodLabel}`,
+      };
+    }
+
+    return {
+      isSlow: false,
+      badgeVariant: "success",
+      label: "Nominal",
+      note: `Base ${formatSqlDuration(baseline)} via ${methodLabel}`,
+    };
+  }
+
   function clampPercent(value) {
     return Math.max(6, Math.min(100, Number(value ?? 0)));
   }
@@ -407,24 +567,74 @@
     });
   }
 
-  function collectGraphDateKeys(indicators) {
-    if (!indicators) {
-      return [];
+  function normalizeGraphRefreshTimelineItem(item) {
+    const timestamp = item?.timestamp || item?.startTime || "";
+    if (!timestamp) {
+      return null;
     }
-    const refreshDates = (indicators.trends?.refreshTimeline ?? [])
-      .map((item) => formatDateKey(item.timestamp))
-      .filter(Boolean);
-    const dailyDates = (indicators.trends?.dailyRefreshPerformance ?? [])
-      .map((item) => item.date)
-      .filter(Boolean);
-    const storedRefreshDates = (indicators.refreshes ?? [])
-      .map((item) => formatDateKey(item.startTime))
-      .filter(Boolean);
-    return [...refreshDates, ...dailyDates, ...storedRefreshDates].sort();
+    const durationSeconds = Number(item?.durationSeconds);
+    if (!Number.isFinite(durationSeconds)) {
+      return null;
+    }
+    return {
+      timestamp,
+      datasetId: item?.datasetId || "",
+      datasetName: item?.datasetName || "",
+      workspaceName: item?.workspaceName || "",
+      status: item?.status || "",
+      isDelayed: Boolean(item?.isDelayed),
+      durationSeconds,
+    };
   }
 
-  function getGraphBounds(indicators) {
-    const keys = collectGraphDateKeys(indicators);
+  function buildGraphRefreshTimeline(payload) {
+    if (!payload) {
+      return [];
+    }
+
+    const normalized = [
+      ...(payload.trends?.refreshTimeline ?? []),
+      ...(payload.refreshes ?? []),
+    ]
+      .map(normalizeGraphRefreshTimelineItem)
+      .filter(Boolean);
+
+    const uniqueTimeline = new Map();
+    normalized.forEach((item) => {
+      const key = [
+        item.timestamp,
+        item.datasetId || item.datasetName,
+        item.durationSeconds,
+        String(item.status || "").toLowerCase(),
+      ].join("|");
+
+      if (!uniqueTimeline.has(key)) {
+        uniqueTimeline.set(key, item);
+      }
+    });
+
+    return [...uniqueTimeline.values()].sort(
+      (left, right) => String(left.timestamp ?? "").localeCompare(String(right.timestamp ?? "")),
+    );
+  }
+
+  function collectGraphDateKeys(payload) {
+    if (!payload) {
+      return [];
+    }
+
+    const refreshDates = buildGraphRefreshTimeline(payload)
+      .map((item) => formatDateKey(item.timestamp))
+      .filter(Boolean);
+    const dailyDates = (payload.trends?.dailyRefreshPerformance ?? [])
+      .map((item) => item.date)
+      .filter(Boolean);
+
+    return [...new Set([...refreshDates, ...dailyDates])].sort();
+  }
+
+  function getGraphBounds(payload) {
+    const keys = collectGraphDateKeys(payload);
     if (!keys.length) {
       return null;
     }
@@ -1647,6 +1857,7 @@
     const [preset, setPreset] = useState("30d");
     const [range, setRange] = useState({ from: "", to: "" });
     const [selectedReport, setSelectedReport] = useState(null);
+    const refreshTimelineSource = useMemo(() => buildGraphRefreshTimeline(payload), [payload]);
     const bounds = useMemo(() => getGraphBounds(payload), [payload]);
 
     useEffect(() => {
@@ -1682,7 +1893,7 @@
           activeRange.to,
         ),
         refreshTimeline: filterItemsByDateRange(
-          payload.trends?.refreshTimeline ?? [],
+          refreshTimelineSource,
           (item) => formatDateKey(item.timestamp),
           activeRange.from,
           activeRange.to,
@@ -1694,7 +1905,7 @@
           activeRange.to,
         ),
       };
-    }, [payload, bounds, range]);
+    }, [payload, bounds, range, refreshTimelineSource]);
 
     const reportSeries = useMemo(
       () => buildReportSeries(
@@ -1705,6 +1916,14 @@
         graphData.to,
       ),
       [graphData],
+    );
+    const availableDayCount = useMemo(
+      () => (bounds ? enumerateDateKeys(bounds.min, bounds.max).length : 0),
+      [bounds],
+    );
+    const visibleDayCount = useMemo(
+      () => (graphData.from && graphData.to ? enumerateDateKeys(graphData.from, graphData.to).length : 0),
+      [graphData.from, graphData.to],
     );
     const activeReportId = selectedReport ?? null;
 
@@ -1728,6 +1947,25 @@
     return h("div", { className: "react-graphs-shell" }, [
       h("div", { className: "react-filter-shell", key: "filters" }, [
         h("p", { className: "panel-kicker react-filter-kicker", key: "label" }, "P\u00e9riode"),
+        bounds
+          ? h("div", { className: "react-filter-topline", key: "summary" }, [
+            h(GlassPill, {
+              key: "window",
+              label: "Plage active",
+              value: `${formatShortDate(graphData.from)} - ${formatShortDate(graphData.to)}`,
+            }),
+            h(GlassPill, {
+              key: "days",
+              label: "Jours visibles",
+              value: formatNumber(visibleDayCount),
+            }),
+            h(GlassPill, {
+              key: "history",
+              label: "Historique charg\u00e9",
+              value: formatNumber(availableDayCount),
+            }),
+          ])
+          : null,
         h(
           "div",
           { className: "react-preset-row", key: "preset-row" },
@@ -1743,7 +1981,13 @@
                 type: "button",
                 key: option.value,
                 className: `preset-chip ${preset === option.value ? "is-active" : ""}`.trim(),
-                onClick: () => setPreset(option.value),
+                "aria-pressed": preset === option.value,
+                onClick: () => {
+                  setPreset(option.value);
+                  if (bounds) {
+                    setRange(computePresetRange(option.value, bounds));
+                  }
+                },
               },
               option.label,
             ),
@@ -2067,6 +2311,9 @@
       from: "",
       to: "",
     });
+    const [selectedStatementType, setSelectedStatementType] = useState("");
+    const [openCommand, setOpenCommand] = useState(null);
+    const [showAllSqlExecutions, setShowAllSqlExecutions] = useState(false);
     const datasetLimit = 10;
 
     const fabricItems = payload?.fabricItems ?? [];
@@ -2100,8 +2347,55 @@
       () => buildStoredProcedureLeaders(filteredFabricSqlExecutions).slice(0, datasetLimit),
       [filteredFabricSqlExecutions, datasetLimit],
     );
+    const statementGroups = useMemo(
+      () => buildFabricSqlStatementGroups(filteredFabricSqlExecutions),
+      [filteredFabricSqlExecutions],
+    );
     const slowestItems = (indicators?.fabric?.executions?.slowestItems ?? []).slice(0, datasetLimit);
     const failingItems = (indicators?.fabric?.executions?.mostFailures ?? []).slice(0, datasetLimit);
+    const selectedGroup = statementGroups.find(
+      (item) => item.statementType === selectedStatementType,
+    ) || statementGroups[0] || null;
+    const selectedSqlExecutions = useMemo(
+      () => filteredFabricSqlExecutions.filter(
+        (item) => normalizeStatementType(item.statementType) === (selectedGroup?.statementType || ""),
+      ),
+      [filteredFabricSqlExecutions, selectedGroup],
+    );
+    const rankedSqlExecutions = useMemo(
+      () => [...selectedSqlExecutions].sort((left, right) => {
+        const leftAnomaly = describeSqlExecutionAnomaly(left, selectedGroup);
+        const rightAnomaly = describeSqlExecutionAnomaly(right, selectedGroup);
+        if (leftAnomaly.isSlow !== rightAnomaly.isSlow) {
+          return leftAnomaly.isSlow ? -1 : 1;
+        }
+        return String(right.startTime ?? "").localeCompare(String(left.startTime ?? ""));
+      }),
+      [selectedSqlExecutions, selectedGroup],
+    );
+    const slowSqlExecutions = useMemo(
+      () => rankedSqlExecutions.filter((item) => describeSqlExecutionAnomaly(item, selectedGroup).isSlow),
+      [rankedSqlExecutions, selectedGroup],
+    );
+    const visibleSqlExecutions = showAllSqlExecutions || !slowSqlExecutions.length
+      ? rankedSqlExecutions
+      : slowSqlExecutions;
+
+    useEffect(() => {
+      if (!statementGroups.length) {
+        if (selectedStatementType) {
+          setSelectedStatementType("");
+        }
+        return;
+      }
+      if (!statementGroups.some((item) => item.statementType === selectedStatementType)) {
+        setSelectedStatementType(statementGroups[0].statementType);
+      }
+    }, [selectedStatementType, statementGroups]);
+
+    useEffect(() => {
+      setShowAllSqlExecutions(false);
+    }, [selectedGroup?.statementType, filters.from, filters.to]);
 
     if (!payload) {
       return h(LoadingState, {
@@ -2265,6 +2559,142 @@
         }),
         h(DetailCard, {
           spanClass: "span-12",
+          kicker: "exec_requests_history",
+          title: "Historique SQL group\u00e9 par statement type",
+          headerRight: h("div", { className: "table-actions", key: "actions" }, [
+            h(
+              "span",
+              { className: "table-meta", key: "meta" },
+              `${formatNumber(statementGroups.length)} type(s) visible(s) | ${formatNumber(slowSqlExecutions.length)} lente(s) | ${formatNumber(selectedSqlExecutions.length)} ex\u00e9cution(s)`,
+            ),
+            selectedSqlExecutions.length > slowSqlExecutions.length && slowSqlExecutions.length
+              ? h(
+                "button",
+                {
+                  className: "action-button tertiary",
+                  type: "button",
+                  key: "toggle-all",
+                  onClick: () => setShowAllSqlExecutions((previous) => !previous),
+                },
+                showAllSqlExecutions ? "Voir seulement les lentes" : "Afficher tout",
+              )
+              : null,
+          ]),
+          children: h(Fragment, null, [
+            h("div", { className: "filter-bar filter-bar-sql", key: "sql-filters" }, [
+              h("label", { className: "filter-field", key: "statement-type" }, [
+                h("span", { key: "label" }, "Statement type"),
+                h("select", {
+                  className: "filter-input",
+                  value: selectedGroup?.statementType || "",
+                  onChange: (event) => setSelectedStatementType(event.target.value),
+                }, statementGroups.map((item) => h(
+                  "option",
+                  { key: item.statementType, value: item.statementType },
+                  `${item.statementType} (${formatNumber(item.executionCount)})`,
+                ))),
+              ]),
+              h("div", { className: "sql-summary-grid", key: "summary" }, selectedGroup
+                ? [
+                  h("div", { className: "metric-chip", key: "count" }, [
+                    h("span", { key: "label" }, "Ex\u00e9cutions"),
+                    h("strong", { key: "value" }, formatNumber(selectedGroup.executionCount)),
+                  ]),
+                  h("div", { className: "metric-chip", key: "baseline" }, [
+                    h("span", { key: "label" }, `Base ${labelBaselineMethod(selectedGroup.baselineMethod)}`),
+                    h("strong", { key: "value" }, formatSqlDuration(selectedGroup.baselineDurationSeconds)),
+                  ]),
+                  h("div", { className: "metric-chip", key: "threshold" }, [
+                    h("span", { key: "label" }, "Seuil lent"),
+                    h("strong", { key: "value" }, formatSqlDuration(selectedGroup.slowThresholdSeconds)),
+                  ]),
+                  h("div", {
+                    className: `metric-chip ${selectedGroup.slowExecutionCount ? "is-alert" : ""}`.trim(),
+                    key: "slow",
+                  }, [
+                    h("span", { key: "label" }, "Ex\u00e9cutions lentes"),
+                    h("strong", { key: "value" }, formatNumber(selectedGroup.slowExecutionCount)),
+                  ]),
+                ]
+                : [
+                  h(EmptyState, {
+                    className: "empty-state compact-empty",
+                    key: "empty",
+                    message: "Aucun statement type ne correspond au filtre de dates.",
+                  }),
+                ]),
+            ]),
+            visibleSqlExecutions.length
+              ? h("div", { className: "table-shell dynamic-table-shell", key: "sql-table-shell" }, [
+                h("table", { key: "table" }, [
+                  h("thead", { key: "head" }, [
+                    h("tr", { key: "row" }, [
+                      h("th", { key: "database" }, "Base"),
+                      h("th", { key: "login" }, "Login"),
+                      h("th", { key: "time" }, "Temps"),
+                      h("th", { key: "program" }, "Program"),
+                      h("th", { key: "command" }, "Commande"),
+                    ]),
+                  ]),
+                  h("tbody", { key: "body" }, visibleSqlExecutions.map((item, index) => {
+                    const anomaly = describeSqlExecutionAnomaly(item, selectedGroup);
+                    return h(
+                      "tr",
+                      {
+                        className: anomaly.isSlow ? "table-row-slow" : "",
+                        key: item.queryId || `${item.itemId || "sql"}-${item.startTime || index}`,
+                      },
+                      [
+                        h("td", { key: "database" }, [
+                          h("div", { className: "table-cell-title", key: "title" }, item.databaseName ?? item.itemName ?? "Base inconnue"),
+                          h("div", { className: "table-cell-note", key: "note" }, item.statementType ?? selectedGroup.statementType),
+                        ]),
+                        h("td", { key: "login" }, item.loginName ?? "N/A"),
+                        h("td", { key: "time" }, [
+                          h("div", { className: "table-cell-title", key: "duration" }, formatSqlDuration(item.durationSeconds)),
+                          h("div", { className: "table-cell-note", key: "start" }, `D\u00e9but: ${formatTimestamp(item.startTime)}`),
+                          h("div", { className: "table-cell-note", key: "end" }, `Fin: ${formatTimestamp(item.endTime)}`),
+                          h("div", { className: "table-badge-stack", key: "stack" }, [
+                            h(Badge, {
+                              key: "badge",
+                              variant: anomaly.badgeVariant,
+                              children: anomaly.label,
+                            }),
+                            h("div", { className: "table-cell-note", key: "note" }, anomaly.note),
+                          ]),
+                        ]),
+                        h("td", { key: "program" }, item.programName ?? "N/A"),
+                        h("td", { key: "command" }, [
+                          h(
+                            "button",
+                            {
+                              className: "action-button tertiary command-open-button",
+                              type: "button",
+                              key: "open",
+                              onClick: () => setOpenCommand({
+                                databaseName: item.databaseName ?? item.itemName ?? "Base inconnue",
+                                command: item.command ?? "Commande indisponible",
+                                loginName: item.loginName ?? "N/A",
+                                programName: item.programName ?? "N/A",
+                                startTime: item.startTime,
+                              }),
+                            },
+                            "Ouvrir",
+                          ),
+                        ]),
+                      ],
+                    );
+                  })),
+                ]),
+              ])
+              : h(EmptyState, {
+                key: "sql-empty",
+                message: "Aucune ex\u00e9cution lente n'a \u00e9t\u00e9 d\u00e9tect\u00e9e pour le statement type s\u00e9lectionn\u00e9.",
+              }),
+          ]),
+        }),
+        h(DetailCard, {
+          spanClass: "span-12",
           kicker: "Ex\u00e9cutions Fabric",
           title: "Ex\u00e9cutions de warehouses et lakehouses",
           headerRight: h(
@@ -2298,6 +2728,40 @@
           ),
         }),
       ]),
+      openCommand
+        ? h("div", {
+          className: "command-modal-backdrop",
+          key: "command-modal",
+          onClick: () => setOpenCommand(null),
+        }, [
+          h("div", {
+            className: "command-modal",
+            key: "modal",
+            onClick: (event) => event.stopPropagation(),
+          }, [
+            h("div", { className: "panel-header panel-header-split", key: "header" }, [
+              h("div", { key: "left" }, [
+                h("p", { className: "panel-kicker", key: "kicker" }, "Commande"),
+                h("h3", { key: "title" }, openCommand.databaseName),
+                h("p", { className: "dynamic-subtitle", key: "meta" }, [
+                  `${openCommand.loginName} | ${openCommand.programName} | ${formatTimestamp(openCommand.startTime)}`,
+                ]),
+              ]),
+              h(
+                "button",
+                {
+                  className: "action-button tertiary command-close-button",
+                  type: "button",
+                  key: "close",
+                  onClick: () => setOpenCommand(null),
+                },
+                "Fermer",
+              ),
+            ]),
+            h("pre", { className: "command-modal-code", key: "code" }, openCommand.command),
+          ]),
+        ])
+        : null,
     ]);
   }
 

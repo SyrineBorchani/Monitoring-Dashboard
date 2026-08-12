@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "framework": null,
+  "outputDirectory": "olive_backend_staging/App/static",
+  "rewrites": [
+    {
+      "source": "/static/:path*",
+      "destination": "/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://monitoring-dashboard-8p9w.onrender.com/api/:path*"
+    },
+    {
+      "source": "/dashboard",
+      "destination": "/"
+    }
+  ]
+}
