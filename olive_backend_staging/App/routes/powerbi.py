@@ -7,6 +7,7 @@ import requests
 from App.analytics import (
     build_dataset_record,
     build_datasource_record,
+    canonicalize_monitoring_entities,
     build_fabric_execution_record,
     build_fabric_item_record,
     build_report_record,
@@ -258,12 +259,26 @@ def _recover_live_response(
 def _mode_payload() -> Dict[str, Any]:
     return {
         "mode": "live",
-        "title": "Environnement connecte",
+        "title": "Environnement connecté",
         "description": (
-            "Le dashboard interroge les APIs Power BI et historise les donnees dans la "
-            "base PostgreSQL configuree."
+            "Le dashboard interroge les APIs Power BI et historise les données dans la "
+            "base PostgreSQL configurée."
         ),
     }
+
+
+def _canonicalize_refreshes_and_incidents(
+    storage: PowerBIStorage,
+    *,
+    refreshes: Optional[List[Dict[str, Any]]] = None,
+    incidents: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    datasets = storage.get_datasets()
+    return canonicalize_monitoring_entities(
+        refreshes or [],
+        incidents or [],
+        datasets,
+    )
 
 
 def _cached_reports(storage: PowerBIStorage, workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -556,14 +571,21 @@ def get_refreshes(
     storage = _storage()
     try:
         datasets = _fetch_live_datasets(storage)
+        refreshes = _fetch_live_refreshes(storage, datasets, refresh_top)
+        normalized_refreshes, _ = canonicalize_monitoring_entities(refreshes, [], datasets)
         return {
-            "value": _fetch_live_refreshes(storage, datasets, refresh_top),
+            "value": normalized_refreshes,
         }
     except requests.RequestException as error:
         return _recover_live_response(
             error,
             endpoint_name="get_refreshes",
-            cached_payload_builder=lambda: {"value": storage.get_refresh_history(limit=5000)},
+            cached_payload_builder=lambda: {
+                "value": _canonicalize_refreshes_and_incidents(
+                    storage,
+                    refreshes=storage.get_refresh_history(limit=5000),
+                )[0]
+            },
         )
     finally:
         storage.db.close()
@@ -576,12 +598,21 @@ def get_incidents(
     storage = _storage()
     try:
         _sync_monitoring_snapshot(storage, refresh_top)
-        return {"value": storage.get_incidents(limit=5000)}
+        _, normalized_incidents = _canonicalize_refreshes_and_incidents(
+            storage,
+            incidents=storage.get_incidents(limit=5000),
+        )
+        return {"value": normalized_incidents}
     except requests.RequestException as error:
         return _recover_live_response(
             error,
             endpoint_name="get_incidents",
-            cached_payload_builder=lambda: {"value": storage.get_incidents(limit=5000)},
+            cached_payload_builder=lambda: {
+                "value": _canonicalize_refreshes_and_incidents(
+                    storage,
+                    incidents=storage.get_incidents(limit=5000),
+                )[1]
+            },
         )
     finally:
         storage.db.close()
@@ -703,7 +734,7 @@ def sync_monitoring_snapshot(
     try:
         snapshot = _sync_monitoring_snapshot(storage, refresh_top)
         return {
-            "message": "Le snapshot de monitoring a ete synchronise.",
+            "message": "Le snapshot de monitoring a été synchronisé.",
             "counts": {
                 "workspaces": len(snapshot["workspaces"]),
                 "datasets": len(snapshot["datasets"]),
@@ -861,12 +892,16 @@ def get_stored_refresh_history(
 ):
     storage = _storage()
     try:
+        refreshes = storage.get_refresh_history(
+            workspace_id=workspace_id,
+            dataset_id=dataset_id,
+            limit=limit,
+        )
         return {
-            "value": storage.get_refresh_history(
-                workspace_id=workspace_id,
-                dataset_id=dataset_id,
-                limit=limit,
-            )
+            "value": _canonicalize_refreshes_and_incidents(
+                storage,
+                refreshes=refreshes,
+            )[0]
         }
     finally:
         storage.db.close()
@@ -880,12 +915,16 @@ def get_stored_incidents(
 ):
     storage = _storage()
     try:
+        incidents = storage.get_incidents(
+            workspace_id=workspace_id,
+            dataset_id=dataset_id,
+            limit=limit,
+        )
         return {
-            "value": storage.get_incidents(
-                workspace_id=workspace_id,
-                dataset_id=dataset_id,
-                limit=limit,
-            )
+            "value": _canonicalize_refreshes_and_incidents(
+                storage,
+                incidents=incidents,
+            )[1]
         }
     finally:
         storage.db.close()

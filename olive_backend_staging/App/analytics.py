@@ -2,13 +2,15 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import json
 import re
-from statistics import mean
+from statistics import mean, median, pvariance
 from typing import Any, Dict, List, Optional, Tuple
 
 
 DEFAULT_DELAY_THRESHOLD_SECONDS = 3600
 DEFAULT_DURATION_ANOMALY_FACTOR = 1.5
 MINIMUM_ANOMALY_DURATION_SECONDS = 300
+DEFAULT_SQL_SLOW_FACTOR = 1.5
+HIGH_SQL_VARIANCE_COEFFICIENT_THRESHOLD = 1.0
 
 
 def parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -323,6 +325,11 @@ def _normalize_identifier(value: Any, fallback: str) -> str:
     return text or fallback
 
 
+def _normalize_statement_type(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    return text or "UNKNOWN"
+
+
 def _extract_procedure_name(command: str) -> Optional[str]:
     if not command:
         return None
@@ -379,6 +386,7 @@ def build_fabric_sql_execution_record(
         "statementType": statement_type or None,
         "status": raw_query.get("status"),
         "command": command or None,
+        "programName": raw_query.get("program_name") or raw_query.get("programName"),
         "loginName": raw_query.get("login_name"),
         "errorCode": raw_query.get("error_code"),
         "procedureName": procedure_name,
@@ -693,6 +701,124 @@ def _build_fabric_execution_timeline(
     return timeline
 
 
+def canonicalize_monitoring_entities(
+    refreshes: List[Dict[str, Any]],
+    incidents: List[Dict[str, Any]],
+    datasets: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    datasets = datasets or []
+    dataset_lookup = {
+        str(dataset.get("datasetId")): dataset
+        for dataset in datasets
+        if dataset.get("datasetId")
+    }
+
+    def _merge_dataset_identity(item: Dict[str, Any]) -> Dict[str, Any]:
+        dataset_id = str(item.get("datasetId") or "").strip()
+        dataset = dataset_lookup.get(dataset_id)
+        if dataset is None:
+            return dict(item)
+
+        normalized = dict(item)
+        if dataset.get("datasetName"):
+            normalized["datasetName"] = dataset.get("datasetName")
+        if dataset.get("workspaceId"):
+            normalized["workspaceId"] = dataset.get("workspaceId")
+        if dataset.get("workspaceName"):
+            normalized["workspaceName"] = dataset.get("workspaceName")
+        return normalized
+
+    return (
+        [_merge_dataset_identity(item) for item in refreshes],
+        [_merge_dataset_identity(item) for item in incidents],
+    )
+
+
+def _build_fabric_sql_statement_groups(
+    fabric_sql_executions: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    grouped_executions: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+    for execution in fabric_sql_executions:
+        grouped_executions[_normalize_statement_type(execution.get("statementType"))].append(
+            execution
+        )
+
+    statement_groups = []
+    for statement_type, executions in grouped_executions.items():
+        durations = [
+            float(item["durationSeconds"])
+            for item in executions
+            if item.get("durationSeconds") is not None
+        ]
+        average_duration = mean(durations) if durations else None
+        median_duration = median(durations) if durations else None
+        variance_seconds = pvariance(durations) if len(durations) > 1 else 0.0
+        variance_coefficient = (
+            (variance_seconds ** 0.5) / average_duration
+            if average_duration not in {None, 0}
+            else 0.0
+        )
+        baseline_method = (
+            "average"
+            if len(durations) > 1
+            and variance_coefficient >= HIGH_SQL_VARIANCE_COEFFICIENT_THRESHOLD
+            else "median"
+        )
+        baseline_duration = (
+            average_duration if baseline_method == "average" else median_duration
+        )
+        slow_threshold_seconds = (
+            baseline_duration * DEFAULT_SQL_SLOW_FACTOR
+            if baseline_duration is not None
+            else None
+        )
+        slow_execution_count = sum(
+            1
+            for duration in durations
+            if slow_threshold_seconds is not None and duration > slow_threshold_seconds
+        )
+        latest_execution = sorted(
+            executions,
+            key=lambda item: item.get("startTime") or "",
+            reverse=True,
+        )[0]
+
+        statement_groups.append(
+            {
+                "statementType": statement_type,
+                "executionCount": len(executions),
+                "averageDurationSeconds": _round(average_duration),
+                "medianDurationSeconds": _round(median_duration),
+                "varianceSeconds": _round(variance_seconds),
+                "varianceCoefficient": _round(variance_coefficient),
+                "baselineMethod": baseline_method,
+                "baselineDurationSeconds": _round(baseline_duration),
+                "slowThresholdSeconds": _round(slow_threshold_seconds),
+                "slowExecutionCount": slow_execution_count,
+                "maximumDurationSeconds": _round(max(durations) if durations else None),
+                "lastSeenAt": latest_execution.get("startTime") or latest_execution.get("endTime"),
+                "programNames": sorted(
+                    {
+                        str(item.get("programName")).strip()
+                        for item in executions
+                        if str(item.get("programName") or "").strip()
+                    }
+                ),
+            }
+        )
+
+    statement_groups.sort(
+        key=lambda item: (
+            -(item.get("slowExecutionCount") or 0),
+            -(item.get("executionCount") or 0),
+            -(item.get("maximumDurationSeconds") or 0),
+            item.get("statementType") or "",
+        )
+    )
+    return statement_groups
+
+
 def _summarize_fabric_monitoring(
     fabric_items: List[Dict[str, Any]],
     fabric_executions: List[Dict[str, Any]],
@@ -783,6 +909,7 @@ def _summarize_fabric_monitoring(
         key=lambda item: item.get("averageDurationSeconds") or 0.0,
         reverse=True,
     )
+    sql_statement_groups = _build_fabric_sql_statement_groups(fabric_sql_executions)
 
     return {
         "inventory": {
@@ -822,6 +949,13 @@ def _summarize_fabric_monitoring(
             "storedProcedureExecutionCount": len(stored_procedure_executions),
             "slowestStoredProcedures": slowest_procedures[:5],
         },
+        "sqlHistory": {
+            "slowFactor": DEFAULT_SQL_SLOW_FACTOR,
+            "highVarianceCoefficientThreshold": (
+                HIGH_SQL_VARIANCE_COEFFICIENT_THRESHOLD
+            ),
+            "statementGroups": sql_statement_groups,
+        },
     }
 
 
@@ -837,6 +971,7 @@ def summarize_monitoring(
     fabric_items = fabric_items or []
     fabric_executions = fabric_executions or []
     fabric_sql_executions = fabric_sql_executions or []
+    refreshes, incidents = canonicalize_monitoring_entities(refreshes, incidents, datasets)
     total_refreshes = len(refreshes)
     successful_refreshes = [item for item in refreshes if item.get("status") == "Completed"]
     failed_refreshes = [item for item in refreshes if item.get("status") == "Failed"]

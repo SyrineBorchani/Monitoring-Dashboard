@@ -7,7 +7,7 @@ const endpoints = {
   incidents: "/api/powerbi/storage/incidents?limit=30",
   reports: "/api/powerbi/reports",
   refreshes: "/api/powerbi/storage/refreshes?limit=",
-  sync: "/api/powerbi/monitoring/sync?refresh_top=100",
+  sync: "/api/powerbi/monitoring/sync?refresh_top=10",
   workspaces: "/api/powerbi/storage/workspaces",
 };
 
@@ -30,8 +30,8 @@ const ui = {
   workspaceCards: document.getElementById("workspaceCards"),
 };
 
-let refreshLimit = 180;
-const refreshStep = 180;
+let refreshLimit = 12;
+const refreshStep = 12;
 let isLoadingDashboard = false;
 
 function ensureBridge(name) {
